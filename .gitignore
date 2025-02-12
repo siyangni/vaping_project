@@ -12,4 +12,4 @@ models/
 *.keras
 *.pt
 .venv/
-.catboost_info/
+catboost_info/
