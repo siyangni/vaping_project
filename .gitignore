@@ -47,6 +47,7 @@ outputs/models/
 
 # Model training outputs
 catboost_info/
+<<<<<<< HEAD
 mlruns/
 .mlflow/
 lightning_logs/
@@ -118,3 +119,7 @@ site/
 
 # Keep directory structure
 !.gitkeep
+=======
+CLAUDE.md
+preprocessing_12.ipynb.backup
+>>>>>>> f918edf (Update .gigtignore)
