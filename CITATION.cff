@@ -1,0 +1,89 @@
+cff-version: 1.2.0
+message: "If you use this code or data analysis methodology, please cite as below."
+type: software
+title: "Predictive Modeling of Nicotine Vaping Among Students: A Longitudinal Analysis"
+version: 1.0.0
+date-released: 2025-11-05
+abstract: >
+  This repository contains the computational pipeline for analyzing nicotine
+  vaping trends among students using machine learning classifiers. The analysis
+  uses longitudinal survey data from the Monitoring the Future study (2017-2023)
+  and employs interpretable AI techniques (SHAP) to identify key risk factors.
+authors:
+  - family-names: "Ni"
+    given-names: "Siyang"
+    orcid: "https://orcid.org/0000-0000-0000-0000"  # Update with actual ORCID
+repository-code: "https://github.com/siyangni/vaping_project"
+url: "https://github.com/siyangni/vaping_project"
+license: MIT
+keywords:
+  - machine learning
+  - nicotine vaping
+  - adolescent substance use
+  - predictive modeling
+  - SHAP
+  - interpretable AI
+  - longitudinal analysis
+  - quantitative criminology
+  - public health
+  - risk factors
+preferred-citation:
+  type: article
+  title: "Predictive Modeling of Nicotine Vaping Among Students: A Longitudinal Analysis (2017-2023)"
+  authors:
+    - family-names: "Ni"
+      given-names: "Siyang"
+  journal: "Journal of Quantitative Criminology"
+  year: 2025
+  status: "submitted"
+  # Add DOI, volume, pages when published
+references:
+  - type: dataset
+    title: "Monitoring the Future: A Continuing Study of American Youth, 2017-2023"
+    authors:
+      - family-names: "Miech"
+        given-names: "Richard A."
+      - family-names: "Johnston"
+        given-names: "Lloyd D."
+      - family-names: "Bachman"
+        given-names: "Jerald G."
+      - family-names: "O'Malley"
+        given-names: "Patrick M."
+      - family-names: "Schulenberg"
+        given-names: "John E."
+      - family-names: "Patrick"
+        given-names: "Megan E."
+    year: 2023
+    publisher:
+      name: "Inter-university Consortium for Political and Social Research"
+    doi: "10.3886/ICPSR39243.v1"
+  - type: software
+    title: "scikit-learn: Machine Learning in Python"
+    authors:
+      - family-names: "Pedregosa"
+        given-names: "F."
+    year: 2011
+    journal: "Journal of Machine Learning Research"
+    volume: 12
+    start: 2825
+    end: 2830
+  - type: software
+    title: "XGBoost: A Scalable Tree Boosting System"
+    authors:
+      - family-names: "Chen"
+        given-names: "Tianqi"
+      - family-names: "Guestrin"
+        given-names: "Carlos"
+    year: 2016
+    conference:
+      name: "KDD '16: Proceedings of the 22nd ACM SIGKDD International Conference on Knowledge Discovery and Data Mining"
+  - type: software
+    title: "SHAP: A Unified Approach to Interpreting Model Predictions"
+    authors:
+      - family-names: "Lundberg"
+        given-names: "Scott M."
+      - family-names: "Lee"
+        given-names: "Su-In"
+    year: 2017
+    conference:
+      name: "Advances in Neural Information Processing Systems 30"
