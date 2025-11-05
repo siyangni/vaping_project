@@ -1,0 +1,38 @@
+MIT License
+
+Copyright (c) 2025 Siyang Ni
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+THIRD-PARTY DATA NOTICE:
+
+This repository contains code for analyzing data from the Monitoring the Future
+(MTF) study. The MTF data itself is NOT included in this repository and is
+subject to separate terms and conditions from the Inter-university Consortium
+for Political and Social Research (ICPSR).
+
+Users must independently obtain MTF data by:
+1. Registering with ICPSR (https://www.icpsr.umich.edu/)
+2. Accepting ICPSR's Terms of Use
+3. Downloading the required survey data files
+
+The MIT License above applies ONLY to the code in this repository, not to the
+MTF survey data.
