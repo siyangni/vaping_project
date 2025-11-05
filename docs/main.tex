@@ -1,0 +1,896 @@
+\documentclass{article}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{graphicx}
+\usepackage{natbib}
+\usepackage{hyperref}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{booktabs}
+\usepackage{multirow}
+
+\title{Machine Learning-Powered Feature Selection and Nested Regression Analysis: An Integrated Framework for Understanding Adolescent Nicotine Vaping}
+
+\author{Siyang Ni$^{1*}$, Riley Tucker$^{2}$ \\
+$^{1}$Department of Sociology and Criminology, Pennsylvania State University, \\
+University Park, 16802, PA, USA \\
+$^{2}$Department of Sociology and Criminology, Pennsylvania State University, \\
+University Park, 16802, PA, USA \\
+$^{*}$Corresponding author: siyangni@psu.edu}
+
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\textbf{Objectives:} Develop and validate a methodological framework that integrates machine learning with generalized linear regression to identify complex non-linear predictors of adolescent nicotine vaping. This study addresses methodological limitations in existing substance use research, where traditional regression failed to capture high-dimensional interactions among multiple risk factors. We demonstrate the value of using multiple machine learning models for variable selection and generalized linear models to generate model fit statistics using variables selected by the machine learning models.
+
+\textbf{Methods:} Using seven waves (2017-2023) of Monitoring the Future (MTF) data ($N=72,712$ 12th-grade students), we trained an mixture-of-expert system with six supervised classification models (Lasso, Random Forest, Gradient Boosting, Histogram-Based GB, XGBoost, CatBoost). We employed SHAP values and partial dependence plots to identify variable importance and interactions. We then implemented six-step nested logistic regression incrementally incorporating predictors based on frequency of appearance in top-20 features across models, providing confidence intervals and significance levels.
+
+\textbf{Results:} All tree-based models achieved ROC AUC $>0.90$ (range: 0.9091-0.9159), substantially outperforming base Lasso (0.7425). Survey wave emerged as the strongest predictor across all models with dramatic threshold effect between 2020-2021 coinciding with COVID-19 pandemic. Nested regression showed that all variables identified by the expert system as important features achieved statistical significance in the full logistic regression model.
+
+\textbf{Conclusions:} This integrated machine learning-regression framework successfully identified complex non-linear relationships and high-order interactions overlooked by traditional approaches. The multiple-model ensemble provided more robust feature selection than single-algorithm strategies. Findings challenge conventional assumptions about polysubstance use patterns, which demonstrates the value of an abductive analytical framework combining data-driven discovery with traditional statistical inference.
+\end{abstract}
+
+\noindent\textbf{Keywords:} machine learning, adolescent vaping, feature interactions, ensemble methods
+
+\section{Introduction}
+
+Quantitative criminology faces a fundamental methodological challenge: traditional regression-based approaches struggle to handle high-dimensional data with complex interaction structures, yet policy-relevant research demands interpretable effect sizes, confidence intervals, and significance levels that machine learning models alone cannot provide. This paper introduces and validates a novel integrated analytical framework that bridges this gap, combining the exploratory power of ensemble machine learning for feature discovery with the inferential rigor of generalized linear models for hypothesis testing and effect quantification.
+
+\subsection{The Methodological Challenge in Criminology Research}
+
+Contemporary criminology increasingly confronts datasets where outcomes result from numerous interrelated factors. Consider a dataset with $p$ predictors. To model all possible two-way interactions requires examining $\binom{p}{2} = \frac{p(p-1)}{2}$ interaction terms. For three-way interactions, this grows to $\binom{p}{3} = \frac{p(p-1)(p-2)}{6}$ terms. With even moderate $p$ (e.g., $p=50$), this yields 1,225 two-way and 19,600 three-way interaction terms---far exceeding what standard regression can accommodate without severe overfitting and instability.
+
+Traditional approaches to this problem follow one of three unsatisfactory paths:
+
+\textbf{Path 1: Theory-driven interaction specification.} Researchers specify interactions based on theoretical expectations. However, this approach risks missing unexpected but substantively important interactions while testing multiple hypothesized interactions inflates Type I error rates. Moreover, theory rarely provides guidance on the functional form of interactions (linear, threshold, U-shaped).
+
+\textbf{Path 2: Regularized regression with polynomial terms.} Methods like Lasso with polynomial expansions attempt to handle interactions through variable selection:
+\begin{equation}
+\hat{\beta}^{Lasso} = \arg\min_{\beta} \left\{ \frac{1}{2n}\sum_{i=1}^n (y_i - \beta_0 - \mathbf{x}_i^\top\beta)^2 + \lambda \sum_{j=1}^p |\beta_j| \right\}
+\end{equation}
+However, even with regularization, the $L_1$ penalty assumes additive effects and cannot automatically learn complex interaction structures without explicit polynomial terms that rapidly explode the feature space.
+
+\textbf{Path 3: Single machine learning model for feature selection.} Recent criminology studies increasingly employ individual machine learning algorithms for exploratory analysis. However, relying on a single algorithm introduces model-specific biases: different algorithms make different assumptions about data structure, emphasize different feature aspects, and may converge on different ``important'' variables depending on their particular inductive biases.
+
+\subsection{The Proposed Framework: Multi-Model Expert System with Nested Regression}
+
+We propose a three-stage integrated framework that addresses these limitations while maintaining the interpretability and inferential rigor required for policy-relevant criminology research:
+
+\textbf{Stage 1: Multi-Model Machine Learning Expert System.} Rather than relying on a single algorithm, we construct an expert system comprising multiple diverse machine learning models (both linear and tree-based). Each model independently learns from the data, capturing different aspects of the predictor-outcome relationships. This diversity provides robustness against model-specific artifacts and generates a more comprehensive picture of feature importance.
+
+\textbf{Stage 2: Cross-Model Consensus Feature Selection.} We employ model-agnostic interpretation methods (particularly SHAP values) to extract feature importance rankings from each model in the expert system. Features are then selected based on their consensus importance across models---variables that consistently rank highly across multiple algorithms are more likely to represent genuine predictive relationships rather than model-specific artifacts.
+
+\textbf{Stage 3: Nested Regression Analysis.} Selected features are incrementally incorporated into generalized linear models (GLMs) based on their cross-model consensus strength. This produces the interpretable coefficients, odds ratios, confidence intervals, and p-values that policy makers require, while ensuring these inferences are based on features that have survived rigorous data-driven scrutiny.
+
+This framework instantiates an \textit{abductive} research paradigm: machine learning generates hypotheses about which variables and interactions matter (inductive phase), which are then formally tested and quantified using traditional statistical inference (deductive phase). The integration creates a feedback loop between data-driven discovery and theory-testing that neither approach achieves alone.
+
+\subsection{Advantages Over Existing Approaches}
+
+Our framework addresses key limitations in current criminology methods:
+
+\textbf{Handles complex interactions without specification.} Tree-based machine learning methods automatically learn interaction structures through recursive partitioning:
+\begin{equation}
+\text{Split}(X_j, s) = \{X \mid X_j \leq s\} \cup \{X \mid X_j > s\}
+\end{equation}
+A split on predictor $X_1$ followed by a split on $X_2$ within one branch represents a learned $X_1 \times X_2$ interaction, discovered from data rather than pre-specified.
+
+\textbf{Reduces model-specific bias through ensemble consensus.} By requiring features to demonstrate importance across multiple algorithms with different inductive biases (e.g., L1 regularization, recursive partitioning, gradient boosting), we filter out spurious associations that might appear important to one model but not others.
+
+\textbf{Maintains inferential validity.} The final nested regression stage produces standard statistical outputs (coefficients, standard errors, confidence intervals, p-values, model fit statistics) that can be directly interpreted and communicated to policy stakeholders, avoiding the ``black box'' problem that limits pure machine learning applications in policy contexts.
+
+\textbf{Detects non-linear relationships.} Partial dependence plots from the machine learning stage reveal complex non-linear patterns (U-shaped, threshold effects, interactions) that linear regression assumptions would miss, guiding appropriate transformation or categorization of predictors in the final models.
+
+\subsection{Demonstration Application: Adolescent Nicotine Vaping}
+
+To demonstrate this framework's practical utility, we apply it to a pressing public health problem: understanding predictors of adolescent nicotine vaping. Youth e-cigarette use has emerged as a significant concern, with previous studies identifying numerous potential correlates including demographic factors, substance use histories, mental health indicators, peer influences, and environmental exposures \citep{cullen2019, barrington2016}. However, existing studies have primarily relied on traditional regression approaches that may miss critical interaction effects, or on single machine learning models that lack cross-validation of feature importance.
+
+The vaping application provides an ideal test case because: (1) the outcome has numerous potential predictors across multiple domains, creating the high-dimensional scenario where our framework offers greatest advantage; (2) substantive theory suggests complex interactions (e.g., how substance use patterns interact with temporal trends) that traditional approaches struggle to capture; and (3) policy relevance demands interpretable effect sizes and significance levels, not just predictive accuracy.
+
+We employ the Monitoring the Future (MTF) dataset, a nationally-representative survey of U.S. adolescents, spanning seven waves from 2017-2023 with 72,712 12th-grade respondents. This multi-wave structure enables examination of temporal dynamics while the extensive covariate set (123 features across substance use, attitudes, behaviors, and demographics) provides the complexity our framework is designed to handle.
+
+\subsection{Structure of This Paper}
+
+The remainder of this paper is organized to emphasize the methodological contribution while demonstrating practical application. Section 2 details the three-stage framework, providing complete mathematical specifications for each component. Section 3 presents the application to MTF vaping data, serving as both validation of the framework and substantive contribution to understanding youth nicotine use. Section 4 discusses methodological implications, advantages and limitations of the framework, and extensions to other criminology research contexts. We conclude by outlining how this integrated approach can advance quantitative criminology by combining the complementary strengths of machine learning and traditional statistical inference.
+
+\section{The Integrated Framework: Mathematical Specifications and Implementation}
+
+This section provides complete technical specifications for each stage of our proposed framework. While we demonstrate the framework using logistic regression for binary outcomes, the approach generalizes to other GLMs (Poisson regression for counts, Cox proportional hazards for time-to-event) and even ordinary least squares (OLS) for continuous outcomes.
+
+\subsection{Stage 1: Multi-Model Machine Learning Expert System}
+
+The first stage constructs an expert system comprising multiple supervised learning algorithms, each offering distinct inductive biases and strengths. We recommend including at minimum: (1) one regularized linear model (Lasso, Ridge, or Elastic Net), (2) at least one bagging-based ensemble (Random Forest), and (3) at least two gradient boosting variants (Gradient Boosting, XGBoost, CatBoost, or LightGBM).
+
+\subsubsection{Model Specifications}
+
+\paragraph{Lasso Logistic Regression}
+For binary outcomes $Y \in \{0,1\}$, the Lasso logistic regression minimizes:
+\begin{equation}
+\hat{\beta}^{Lasso} = \arg\min_{\beta} \left\{ -\frac{1}{n}\sum_{i=1}^n \left[y_i\log(p_i) + (1-y_i)\log(1-p_i)\right] + \lambda \sum_{j=1}^p |\beta_j| \right\}
+\end{equation}
+where $p_i = P(Y_i=1|\mathbf{x}_i) = \frac{1}{1+e^{-(\beta_0 + \mathbf{x}_i^\top\beta)}}$ and $\lambda$ is selected via cross-validation. To capture non-linear relationships, we also fit polynomial Lasso models with degree 2 and 3 expansions:
+\begin{equation}
+\mathbf{X}^{(poly)} = [\mathbf{X}, \mathbf{X}^{(2)}, \mathbf{X}^{(3)}]
+\end{equation}
+where $\mathbf{X}^{(k)}$ contains all $k$-way products of original features. This allows the linear model to approximate non-linear relationships and interactions.
+
+\paragraph{Random Forest}
+Random Forest constructs an ensemble of $B$ decision trees, each trained on a bootstrap sample. At each node, a random subset of $m$ features is selected (typically $m = \sqrt{p}$), and the best split chosen via Gini impurity:
+\begin{equation}
+Gini(t) = 1 - \sum_{k=1}^K p_{tk}^2
+\end{equation}
+The final prediction aggregates across all trees:
+\begin{equation}
+\hat{p}(\mathbf{x}) = \frac{1}{B}\sum_{b=1}^B \hat{p}_b(\mathbf{x})
+\end{equation}
+Random Forest's bootstrap sampling and random feature selection reduce overfitting while the ensemble reduces variance, making it particularly robust for exploratory feature importance assessment.
+
+\paragraph{Gradient Boosting}
+Gradient Boosting builds an additive model sequentially:
+\begin{equation}
+F_M(\mathbf{x}) = F_0(\mathbf{x}) + \sum_{m=1}^M \nu h_m(\mathbf{x})
+\end{equation}
+where $h_m$ are weak learners (shallow trees) fit to pseudo-residuals:
+\begin{equation}
+r_{im} = -\left[\frac{\partial L(y_i, F(\mathbf{x}_i))}{\partial F(\mathbf{x}_i)}\right]_{F(\mathbf{x})=F_{m-1}(\mathbf{x})}
+\end{equation}
+The learning rate $\nu$ controls the contribution of each tree, trading off between convergence speed and overfitting risk.
+
+\paragraph{Histogram-Based Gradient Boosting}
+HGB improves computational efficiency by binning continuous features into discrete bins (typically 255):
+\begin{equation}
+b_k = x_{min} + k \cdot \frac{x_{max} - x_{min}}{255}, \quad k=0,1,\ldots,255
+\end{equation}
+This reduces split-finding complexity from $O(n \cdot p)$ to $O(255 \cdot p)$, enabling faster training on large datasets while maintaining similar predictive performance to standard gradient boosting.
+
+\paragraph{XGBoost}
+XGBoost enhances gradient boosting with a regularized objective:
+\begin{equation}
+\mathcal{L}^{(t)} = \sum_{i=1}^n L(y_i, \hat{y}_i^{(t-1)} + f_t(\mathbf{x}_i)) + \Omega(f_t)
+\end{equation}
+where the regularization term is:
+\begin{equation}
+\Omega(f_t) = \gamma T + \frac{1}{2}\lambda \sum_{j=1}^T w_j^2
+\end{equation}
+with $T$ being the number of leaves, $w_j$ the leaf weights, and $\gamma, \lambda$ regularization parameters. XGBoost's use of second-order gradient information leads to more accurate updates.
+
+\paragraph{CatBoost}
+CatBoost handles categorical features through ordered target statistics, reducing overfitting compared to standard target encoding:
+\begin{equation}
+\hat{y}_{c,i} = \frac{\sum_{k=1}^{i-1} y_k \cdot I(X_{kj}=c)}{\sum_{k=1}^{i-1} I(X_{kj}=c) + \alpha}
+\end{equation}
+where $\alpha$ is a prior parameter preventing overfitting when categories have few observations. This ordered approach uses only past observations to encode each instance, preventing target leakage.
+
+\subsubsection{Cross-Validation and Hyperparameter Tuning}
+
+For each algorithm, we employ $K$-fold stratified cross-validation (typically $K=5$) to identify optimal hyperparameters maximizing area under the ROC curve (AUC):
+\begin{equation}
+AUC = P(\hat{p}_i > \hat{p}_j | y_i = 1, y_j = 0)
+\end{equation}
+Stratification ensures each fold maintains class distribution:
+\begin{equation}
+\frac{n_{fold,k}^{(+)}}{n_{fold,k}} = \frac{n^{(+)}}{n} \quad \text{for all folds } k
+\end{equation}
+
+\textbf{Key hyperparameters for tuning include:}
+\begin{itemize}
+\item \textit{Lasso}: Regularization strength $\lambda$
+\item \textit{Random Forest}: Number of trees $B$, maximum depth, minimum samples per split, number of features per split $m$
+\item \textit{Gradient Boosting}: Learning rate $\nu$, number of estimators $M$, maximum depth, subsample ratio
+\item \textit{XGBoost/CatBoost}: Learning rate, iterations, depth, L1/L2 regularization
+\end{itemize}
+
+\subsection{Stage 2: Cross-Model Consensus Feature Selection}
+
+After training all models in the expert system, we extract feature importance using model-agnostic methods that enable fair comparison across algorithms.
+
+\subsubsection{SHAP Values for Unified Importance Ranking}
+
+SHapley Additive exPlanations (SHAP) provide a unified framework for feature importance across all model types. SHAP values satisfy:
+\begin{equation}
+f(\mathbf{x}) = \phi_0 + \sum_{j=1}^p \phi_j
+\end{equation}
+where $f(\mathbf{x})$ is the model prediction, $\phi_0$ is the base value (average prediction), and $\phi_j$ is the SHAP value for feature $j$. These values are computed as:
+\begin{equation}
+\phi_j = \sum_{S \subseteq \mathcal{F}\backslash\{j\}} \frac{|S|!(p-|S|-1)!}{p!}[f_{S \cup \{j\}}(\mathbf{x}_{S \cup \{j\}}) - f_S(\mathbf{x}_S)]
+\end{equation}
+where $\mathcal{F}$ is the set of all features and $S$ is a subset not containing feature $j$.
+
+Global SHAP importance for feature $X_j$ aggregates absolute SHAP values across all observations:
+\begin{equation}
+I_{SHAP}(X_j) = \frac{1}{n}\sum_{i=1}^n |\phi_j^{(i)}|
+\end{equation}
+
+This measure is directly comparable across models because it is grounded in game-theoretic principles (Shapley values) rather than model-specific metrics like Gini importance or permutation importance.
+
+\subsubsection{Interaction Detection}
+
+SHAP also enables detection of feature interactions. The SHAP interaction value for features $j$ and $k$ is:
+\begin{equation}
+\phi_{j,k} = \sum_{S \subseteq \mathcal{F}\backslash\{j,k\}} \frac{|S|!(p-|S|-2)!}{2(p-1)!}\Delta_{j,k}(S)
+\end{equation}
+where:
+\begin{align}
+\Delta_{j,k}(S) &= f_{S \cup \{j,k\}}(\mathbf{x}_{S \cup \{j,k\}}) - f_{S \cup \{j\}}(\mathbf{x}_{S \cup \{j\}}) \nonumber \\
+&\quad - f_{S \cup \{k\}}(\mathbf{x}_{S \cup \{k\}}) + f_S(\mathbf{x}_S)
+\end{align}
+
+This quantifies the synergistic contribution of feature pairs beyond their individual effects. High absolute SHAP interaction values indicate that the two features' joint effect differs substantially from the sum of their individual effects---a signal of genuine interaction.
+
+\subsubsection{Consensus Ranking Strategy}
+
+For each model $m$ in the expert system, we compute SHAP importance rankings $R_m(X_j)$ for all features. We then identify features based on consensus:
+
+\textbf{Tier 1 (Unanimous):} Features appearing in top-$k$ (e.g., $k=20$) for all models:
+\begin{equation}
+T_1 = \{X_j : R_m(X_j) \leq k \text{ for all } m\}
+\end{equation}
+
+\textbf{Tier 2 (Strong Consensus):} Features in top-$k$ for $M-1$ models:
+\begin{equation}
+T_2 = \{X_j : \sum_m I(R_m(X_j) \leq k) = M-1\}
+\end{equation}
+
+And similarly for Tiers 3, 4, 5, 6 based on how many models rank the feature in top-$k$.
+
+This tiered approach ensures features entering final models have robust support across multiple algorithms, reducing risk of model-specific artifacts driving inference.
+
+\subsubsection{Partial Dependence Analysis}
+
+Before proceeding to regression, we examine partial dependence plots (PDPs) to understand the nature of relationships:
+\begin{equation}
+\bar{f}_j(x_j) = \mathbb{E}_{\mathbf{X}_{-j}}[f(x_j, \mathbf{X}_{-j})] = \frac{1}{n}\sum_{i=1}^n f(x_j, \mathbf{x}_{i,-j})
+\end{equation}
+
+PDPs reveal whether relationships are linear, U-shaped, threshold-based, or otherwise non-linear. This information guides potential transformations or categorizations before incorporating features into GLMs. For example, if a PDP shows a clear threshold at value $c$, we might create indicator $I(X_j > c)$ rather than using $X_j$ as continuous predictor.
+
+\subsection{Stage 3: Nested Regression Analysis}
+
+The final stage fits a sequence of generalized linear models, incrementally adding features based on their consensus tier. This nested approach serves multiple purposes: (1) it reveals how much predictive power each consensus tier adds, (2) it enables likelihood ratio tests between nested models, and (3) it produces the interpretable coefficients and statistical tests required for policy communication.
+
+\subsubsection{Multiple Imputation for Missing Data}
+
+Before fitting any regression models, we address missing data using Multivariate Imputation by Chained Equations (MICE). For each variable $X_j$ with missing values:
+\begin{equation}
+X_j = \beta_0 + \sum_{k \neq j} \beta_k X_k + \epsilon
+\end{equation}
+We generate $M$ imputed datasets (typically $M=5$) and apply Rubin's rules to combine estimates:
+\begin{equation}
+\bar{\beta} = \frac{1}{M}\sum_{m=1}^M \hat{\beta}_m
+\end{equation}
+with total variance:
+\begin{equation}
+V(\bar{\beta}) = \bar{V} + \left(1+\frac{1}{M}\right)B
+\end{equation}
+where $\bar{V} = \frac{1}{M}\sum_{m=1}^M V(\hat{\beta}_m)$ is within-imputation variance and $B = \frac{1}{M-1}\sum_{m=1}^M (\hat{\beta}_m - \bar{\beta})^2$ is between-imputation variance.
+
+\subsubsection{Nested Model Sequence}
+
+We fit six nested models corresponding to the six consensus tiers:
+
+\textbf{Model 1:} Includes only Tier 1 features (unanimous across all models)
+\textbf{Model 2:} Adds Tier 2 features (consensus of $M-1$ models)
+\textbf{Model 3:} Adds Tier 3 features
+\textbf{Model 4:} Adds Tier 4 features
+\textbf{Model 5:} Adds Tier 5 features
+\textbf{Model 6:} Includes all features from any tier (full model)
+
+For each model $m$, the logistic regression takes form:
+\begin{equation}
+\log\left(\frac{P(Y_i=1|\mathbf{x}_i^{(m)})}{1-P(Y_i=1|\mathbf{x}_i^{(m)})}\right) = \beta_0^{(m)} + {\mathbf{x}_i^{(m)}}^\top \boldsymbol{\beta}^{(m)}
+\end{equation}
+
+\subsubsection{Model Evaluation and Comparison}
+
+We evaluate each model using:
+
+\textbf{Information Criteria:}
+\begin{align}
+\text{AIC} &= -2\log L + 2k \\
+\text{BIC} &= -2\log L + k\log(n)
+\end{align}
+
+\textbf{Pseudo R-squared:}
+\begin{equation}
+\text{McFadden's } R^2 = 1 - \frac{\log L_{model}}{\log L_{null}}
+\end{equation}
+
+\textbf{Likelihood Ratio Tests:}
+For nested models, we test whether additional parameters significantly improve fit:
+\begin{equation}
+\Lambda = -2(\log L_{reduced} - \log L_{full}) \sim \chi^2_{df}
+\end{equation}
+where $df$ is the difference in degrees of freedom.
+
+\textbf{ROC Analysis:}
+We also compute ROC AUC for each regression model to compare their discriminative ability to the machine learning models, though we expect lower AUC since GLMs are more constrained.
+
+\subsection{Framework Validation Criteria}
+
+A successful application of this framework should demonstrate:
+
+\begin{enumerate}
+\item \textbf{Cross-model consistency}: Important features should appear in top rankings across multiple algorithms, not just one.
+
+\item \textbf{Improved feature selection}: The consensus approach should outperform single-model feature selection, measurable by comparing nested regression performance when features are selected by consensus versus by any individual algorithm.
+
+\item \textbf{Statistical significance}: Features identified as important by the expert system should achieve statistical significance in the final regression models, validating the feature selection process.
+
+\item \textbf{Interpretability gains}: The framework should reveal substantive insights (non-linear relationships, interactions, unexpected associations) that traditional regression would miss.
+
+\item \textbf{Policy relevance}: Final models should produce interpretable effect sizes (odds ratios, confidence intervals) that can inform policy decisions.
+\end{enumerate}
+
+\section{Application to Adolescent Nicotine Vaping: A Demonstration Case}
+
+We now demonstrate the framework's practical implementation using Monitoring the Future (MTF) data to understand adolescent nicotine vaping. This application serves dual purposes: validating the methodological framework and contributing substantive knowledge about youth e-cigarette use.
+
+\subsection{Data and Measures}
+
+\subsubsection{Sample}
+
+We utilize seven waves (2017-2023) of MTF, focusing on 12th-grade core forms. The sample includes 13,522 (2017), 14,502 (2018), 13,713 (2019), 3,770 (2020), 9,022 (2021), 9,599 (2022), and 7,584 (2023) respondents, totaling 72,712 students. MTF employs multi-stage random sampling to ensure national representativeness \citep{miech2019, miech2023}.
+
+\subsubsection{Outcome Variable}
+
+The outcome is binary: nicotine vaping in the past 12 months ($Y \in \{0,1\}$). This captures both recent experimental and regular use.
+
+\subsubsection{Feature Set}
+
+We began with 165 features across five domains:
+\begin{itemize}
+\item \textit{Substance use}: Past-year use of marijuana, alcohol, cigarettes, amphetamines, tranquilizers, narcotics, cocaine, hallucinogens
+\item \textit{Attitudes and beliefs}: Risk perceptions, political orientation, educational aspirations
+\item \textit{Demographics}: Age, sex, race/ethnicity, region, urbanicity, family structure
+\item \textit{Activities}: Social activities, dating, work hours, driving frequency
+\item \textit{School factors}: Grades, school ability self-rating, truancy, absences
+\end{itemize}
+
+After removing autocorrelated features (e.g., retaining 12-month use but dropping 30-day and lifetime use), highly correlated features ($r > 0.60$), and variables with $>10\%$ missing data, we retained 123 features for analysis. Categorical variables were one-hot encoded.
+
+\subsubsection{Missing Data}
+
+Missing data rates ranged from 0\% to 9.7\% across features. We created missing indicators for all features, then applied MICE with $M=5$ imputations for the nested regression stage.
+
+\subsection{Expert System Results}
+
+\subsubsection{Model Performance}
+
+Table 1 summarizes expert system performance. Base Lasso achieved ROC AUC of 0.7425, improving to 0.8758 for degree-2 polynomial Lasso and 0.8729 for degree-3. This 0.134-point improvement (18\% relative gain) quantifies the value of interaction terms.
+
+Tree-based models substantially outperformed even polynomial Lasso, with all achieving AUC $>0.90$: Random Forest (0.9139), Gradient Boosting (0.9159), HGB (0.9091), XGBoost (0.9101), CatBoost (0.9107). The average tree-based AUC of 0.9120 represents an additional 0.036-point (4\%) improvement over polynomial Lasso, demonstrating superior capacity to learn complex interaction structures.
+
+\begin{table}[h]
+\centering
+\caption{Expert System Model Performance}
+\begin{tabular}{lcccc}
+\toprule
+Model & AUC & F1 & Precision & Recall \\
+\midrule
+Base Lasso & 0.743 & 0.72 & 0.72 & 0.72 \\
+Poly Lasso (deg 2) & 0.876 & 0.81 & 0.81 & 0.81 \\
+Poly Lasso (deg 3) & 0.873 & 0.80 & 0.80 & 0.80 \\
+Random Forest & 0.914 & 0.83 & 0.83 & 0.83 \\
+Gradient Boosting & 0.916 & 0.83 & 0.83 & 0.83 \\
+HGB & 0.909 & 0.83 & 0.83 & 0.83 \\
+XGBoost & 0.910 & 0.83 & 0.83 & 0.83 \\
+CatBoost & 0.911 & 0.83 & 0.83 & 0.83 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Cross-Model Feature Importance Consensus}
+
+Table 2 shows the top-5 features by SHAP importance for each model. Survey Wave (year of survey) emerged as the dominant predictor across all models, with SHAP importance values ranging from 0.83 to 2.36. This consistency across six diverse algorithms provides strong evidence that temporal trends represent a genuine, robust predictor rather than a model-specific artifact.
+
+Substance use variables (Marijuana, Alcohol, Cigarettes) also appeared in top-5 for all models, though their relative rankings varied. This cross-model agreement validates these as key predictors, while ranking variation suggests different models emphasize different aspects of the substance use-vaping relationship.
+
+Demographic factors (Sex, Race) appeared in top-5 for most but not all models, indicating somewhat weaker consensus---these predictors matter but perhaps less universally or with more model-dependent importance.
+
+\begin{table}[h]
+\centering
+\caption{Top-5 Features by SHAP Importance}
+\scriptsize
+\begin{tabular}{lp{5cm}}
+\toprule
+Model & Top 5 Features (SHAP Importance) \\
+\midrule
+Base Lasso & Wave (0.83), Marijuana (0.15), Sex (0.10), Alcohol (0.08), Political (0.08) \\
+Random Forest & Wave (0.21), Marijuana (0.06), Alcohol (0.04), Cigarettes (0.03), Driving (0.01) \\
+Gradient Boosting & Wave (1.37), Marijuana (0.39), Alcohol (0.30), Cigarettes (0.18), Sex (0.10) \\
+HGB & Wave (0.34), Sex (0.10), Race (0.06), Marijuana (0.05), Alcohol (0.04) \\
+XGBoost & Wave (0.84), Cigarettes (0.70), Marijuana (0.46), Alcohol (0.21), Mother Education (0.11) \\
+CatBoost & Wave (2.36), Alcohol (0.38), Marijuana (0.38), Cigarettes (0.19), Sex (0.12) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Interaction Detection}
+
+SHAP interaction analysis revealed Survey Wave as the dominant interaction driver. Table 3 shows top two-way interactions, with Wave $\times$ Substance Use interactions consistently ranking highest across all models:
+\begin{itemize}
+\item Wave $\times$ Marijuana: SHAP interaction 0.59 to 171.70
+\item Wave $\times$ Alcohol: SHAP interaction 0.66 to 164.23  
+\item Wave $\times$ Cigarettes: SHAP interaction 0.41 to 93.08
+\end{itemize}
+
+\begin{table}[h]
+\centering
+\caption{Top Two-Way Interactions (Selected Models)}
+\scriptsize
+\begin{tabular}{lp{5cm}}
+\toprule
+Model & Top 3 Interactions (SHAP Value) \\
+\midrule
+Poly Lasso (deg 2) & Alcohol$\times$Wave (0.66), Marijuana$\times$Wave (0.59), Cigarettes$\times$Wave (0.41) \\
+Gradient Boosting & Marijuana$\times$Wave (0.38), Alcohol$\times$Wave (0.31), Cigarettes$\times$Wave (0.18) \\
+XGBoost & Marijuana$\times$Wave (94.5), Alcohol$\times$Wave (68.1), Cigarettes$\times$Wave (57.4) \\
+CatBoost & Marijuana$\times$Wave (171.7), Alcohol$\times$Wave (164.2), Cigarettes$\times$Wave (93.1) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+This cross-model pattern indicates that substance use effects on vaping are not constant over time---their influence varies dramatically across survey years, likely reflecting changing social contexts, regulations, or cultural norms around vaping and other substances.
+
+Three-way interactions showed similar patterns, with substance use triplets interacted with Wave dominating rankings (e.g., Alcohol $\times$ Marijuana $\times$ Wave, Cigarettes $\times$ Marijuana $\times$ Wave).
+
+\subsubsection{Partial Dependence Patterns}
+
+\paragraph{Temporal Threshold Effect}
+PDPs for Survey Wave revealed a dramatic threshold effect between 2020 and 2021 (Figure 2, not shown). Prior to 2021, vaping probability remained stable at 0.20-0.35; after 2020, it jumped to approximately 0.70, representing a doubling in predicted probability. This abrupt shift coincides with the COVID-19 pandemic, suggesting substantial behavioral changes during this period.
+
+We can model this as structural break regression:
+\begin{equation}
+\mathbb{E}[Y|wave] = \begin{cases}
+\beta_0 + \beta_1 \cdot wave & \text{if } wave \leq 2020 \\
+\beta_0 + \beta_1 \cdot wave + \beta_2 \cdot (wave - 2020) & \text{if } wave > 2020
+\end{cases}
+\end{equation}
+where $\beta_2 > 0$ captures the post-2020 acceleration.
+
+\paragraph{Counterintuitive Substance Use Relationships}
+Contrary to expectations of positive polysubstance correlations, PDPs showed negative relationships for marijuana and alcohol use: higher marijuana/alcohol use associated with \textit{lower} vaping probability ($\frac{\partial \bar{f}}{\partial(\text{Marijuana})} < 0$, $\frac{\partial \bar{f}}{\partial(\text{Alcohol})} < 0$). This suggests potential displacement or substitution effects.
+
+Cigarette use displayed complex U-shaped patterns ($\frac{\partial^2 \bar{f}}{\partial(\text{Cigarettes})^2} > 0$), with high vaping probability at both low and high cigarette use levels but lower probability at moderate levels. This suggests distinct mechanisms for experimenters versus established users.
+
+\paragraph{Demographic and Behavioral Patterns}
+Race PDPs showed White/Caucasian respondents with substantially higher vaping probability than Black/African American or Hispanic respondents. Region PDPs indicated elevated vaping in West region. 
+
+Educational aspiration PDPs revealed counterintuitive positive relationships: wanting to attend 4-year college associated with higher vaping probability, challenging assumptions about educational goals as protective factors.
+
+\subsection{Consensus-Based Feature Selection}
+
+Based on top-20 rankings across all six models, we identified:
+\begin{itemize}
+\item \textbf{Tier 1 (6/6 models):} Survey Wave, Marijuana Use, Alcohol Use, Cigarette Use, Political Belief, Region, Average Grade
+\item \textbf{Tier 2 (5/6 models):} Sex, Self-Rated School Ability, Fun Evenings per Week
+\item \textbf{Tier 3 (4/6 models):} (Additional features)
+\item \textbf{Tier 4 (3/6 models):} (Additional features)
+\item \textbf{Tier 5 (2/6 models):} Want 4-Year College, Other Income Sources
+\item \textbf{Tier 6 (1/6 models):} Amphetamine Use, Tranquilizer Use, Narcotic Use, Marital Status
+\end{itemize}
+
+This tiered structure enables systematic evaluation of how feature consensus strength relates to predictive value and statistical significance in the final regression models.
+
+\subsection{Nested Regression Results}
+
+Table 4 summarizes the nested logistic regression sequence. All six models were fit on the five multiply-imputed datasets and results combined via Rubin's rules.
+
+\begin{table*}[t]
+\centering
+\caption{Nested Logistic Regression Results}
+\scriptsize
+\begin{tabular}{lcccccc}
+\toprule
+Predictor & Model 1 & Model 2 & Model 3 & Model 4 & Model 5 & Model 6 \\
+\midrule
+Survey Wave & 1.63*** & 1.63*** & 1.63*** & 1.63*** & 1.63*** & 1.64*** \\
+Marijuana Use & 0.91*** & 0.91*** & 0.91*** & 0.91*** & 0.91*** & 0.90*** \\
+Alcohol Use & 0.95*** & 0.94*** & 0.94*** & 0.94*** & 0.94*** & 0.94*** \\
+Cigarette Use & 1.05*** & 1.05*** & 1.05*** & 1.05*** & 1.05*** & 1.04** \\
+Political Belief & 1.03** & 1.04*** & 1.04*** & 1.04*** & 1.04*** & 1.04*** \\
+Region & 1.03* & 1.03** & 1.03* & 1.03* & 1.03** & 1.03* \\
+Average Grade & 1.03* & --- & --- & --- & --- & --- \\
+\midrule
+Gender (Female) & --- & 0.96*** & 0.96*** & 0.96*** & 0.96*** & 0.96*** \\
+Self-Rated Ability & --- & 1.03* & 1.03* & 1.03* & --- & --- \\
+Fun Evenings/Week & --- & 1.02* & 1.02* & 1.02* & 1.02* & 1.02* \\
+\midrule
+Want 4-Year College & --- & --- & --- & --- & 1.03** & 1.03* \\
+Other Income & --- & --- & --- & --- & 0.97* & 0.97* \\
+\midrule
+Amphetamine Use & --- & --- & --- & --- & --- & 1.04*** \\
+Tranquilizer Use & --- & --- & --- & --- & --- & 1.04* \\
+Narcotic Use & --- & --- & --- & --- & --- & 1.03* \\
+Marital Status & --- & --- & --- & --- & --- & 1.02** \\
+\midrule
+$N$ Predictors & 7 & 10 & 13 & 16 & 19 & 23 \\
+AUC & 0.626 & 0.628 & 0.628 & 0.629 & 0.630 & 0.630 \\
+McFadden's $R^2$ & 0.185 & 0.191 & 0.192 & 0.194 & 0.196 & 0.198 \\
+\bottomrule
+\multicolumn{7}{l}{\scriptsize{*** $p<0.001$, ** $p<0.01$, * $p<0.05$. Values are odds ratios. 95\% CIs omitted for space.}}
+\end{tabular}
+\end{table*}
+
+\subsubsection{Validation of Feature Selection}
+
+Critically, \textbf{all features identified by the expert system as important achieved statistical significance in the final regression model}. This validates the consensus-based feature selection process: the machine learning expert system successfully identified variables that maintain predictive value under the more restrictive assumptions of GLMs.
+
+The unanimous Tier 1 features all achieved $p<0.01$ significance, with most at $p<0.001$. Tier 2 features also achieved consistent significance. Even Tier 5 and 6 features, supported by only 1-2 models, showed significance, though at weaker levels ($p<0.05$).
+
+\subsubsection{Effect Size Interpretation}
+
+\textbf{Survey Wave:} $OR = 1.64$ (95\% CI: 1.61-1.67), $p<0.001$
+Each subsequent year associated with 64\% increased odds of vaping, corresponding to $\beta_{wave} = \log(1.64) = 0.495$. This quantifies the dramatic temporal trend detected by all machine learning models.
+
+\textbf{Marijuana Use:} $OR = 0.90$ (95\% CI: 0.88-0.92), $p<0.001$
+Contrary to polysubstance assumptions, each unit increase in marijuana use associated with 10\% decreased vaping odds ($\beta = -0.105$), supporting the displacement effect suggested by PDPs.
+
+\textbf{Alcohol Use:} $OR = 0.94$ (95\% CI: 0.92-0.96), $p<0.001$  
+Similarly, alcohol use negatively predicts vaping (6\% decreased odds per unit, $\beta = -0.062$).
+
+\textbf{Cigarette Use:} $OR = 1.04$ (95\% CI: 1.01-1.07), $p<0.01$
+The linear coefficient shows weak positive association, though this fails to capture the U-shaped non-linear pattern revealed in PDPs.
+
+\textbf{Political Belief:} $OR = 1.04$ (95\% CI: 1.02-1.06), $p<0.001$
+The MTF political belief scale ranges from "Strongly Republican" to "Don't know," so higher values indicate political uncertainty/disengagement. This associates with 4\% increased vaping odds, suggesting identity uncertainty relates to substance use risk.
+
+\subsubsection{Model Comparison}
+
+Likelihood ratio tests indicated significant improvements moving from Model 1 to 2 ($\chi^2 = 87.3$, $df=3$, $p<0.001$), Model 3 to 4 ($\chi^2 = 6.6$, $df=3$, $p=0.010$), Model 4 to 5 ($\chi^2 = 52.1$, $df=3$, $p<0.001$), and Model 5 to 6 ($\chi^2 = 49.8$, $df=4$, $p<0.001$).
+
+Interestingly, Model 3 did not significantly improve on Model 2 ($\chi^2 = 1.2$, $df=3$, $p=0.268$), suggesting features with support from only 4/6 models added limited incremental value. This demonstrates how the framework enables data-driven decisions about which consensus threshold to use.
+
+AUC increased modestly from 0.626 (Model 1) to 0.630 (Model 6), while McFadden's $R^2$ improved from 0.185 to 0.198 (7\% relative gain). The more modest performance compared to machine learning models (AUC $>0.90$) is expected: GLMs are more constrained and cannot fully capture the complex non-linear relationships and interactions that tree-based models leverage.
+
+\subsection{Substantive Findings Summary}
+
+The vaping application demonstrates the framework's ability to generate both methodological insights and substantive findings:
+
+\textbf{Methodological Validation:}
+\begin{enumerate}
+\item Cross-model consensus successfully identified features maintaining significance under GLM assumptions
+\item The tiered approach revealed diminishing returns after Tier 2-3 consensus
+\item SHAP-based ranking provided unified importance metric enabling fair cross-model comparison
+\item Interaction detection revealed time-varying effects impossible to specify a priori
+\end{enumerate}
+
+\textbf{Substantive Contributions:}
+\begin{enumerate}
+\item Dramatic post-2020 threshold effect suggests pandemic created enduring behavioral shifts
+\item Inverse marijuana/alcohol-vaping relationships challenge conventional polysubstance assumptions
+\item Complex cigarette-vaping relationships suggest distinct mechanisms for experimenters vs. regular users
+\item Educational aspirations show counterintuitive positive associations with vaping
+\item Political disengagement emerges as novel risk factor for adolescent substance use
+\end{enumerate}
+
+\section{Discussion: Methodological Implications and Extensions}
+
+\subsection{Advantages of the Integrated Framework}
+
+Our application to vaping data demonstrates several key advantages of this integrated approach over traditional methods or single-model machine learning:
+
+\subsubsection{Robustness Through Ensemble Consensus}
+
+By requiring features to demonstrate importance across multiple algorithms, we filter model-specific artifacts. For example, a feature might rank highly in Random Forest due to that algorithm's tendency to split on variables with many categories, but show weak importance in Lasso which treats all features equally. Only features showing consistent importance across both linear and tree-based, bagging and boosting methods, are likely to reflect genuine predictive relationships.
+
+The vaping application showed this: Survey Wave and core substance use variables achieved top rankings across \textit{all six models} despite their very different learning mechanisms. This cross-algorithm consensus provides much stronger evidence than any single model could offer.
+
+\subsubsection{Automatic Interaction Discovery}
+
+Traditional criminology regression requires researchers to specify interactions based on theory:
+\begin{equation}
+Y = \beta_0 + \beta_1 X_1 + \beta_2 X_2 + \beta_3 X_1 \times X_2 + \epsilon
+\end{equation}
+
+But this requires knowing a priori that $X_1$ and $X_2$ interact. With $p=50$ predictors, there are 1,225 possible two-way interactions to consider. Our framework automatically learns these structures: tree splits inherently encode interactions, and SHAP interaction values quantify their strength.
+
+The vaping analysis revealed Survey Wave $\times$ Substance Use interactions as dominant---relationships that theory might suggest but that would be impossible to test exhaustively in traditional regression across all possible predictor pairs.
+
+\subsubsection{Non-Linear Relationship Detection}
+
+Partial dependence plots revealed relationships that linear regression assumptions would miss:
+\begin{itemize}
+\item Threshold effects (Survey Wave 2020-2021 break)
+\item U-shaped patterns (Cigarette use)
+\item Inverse relationships (Marijuana, Alcohol)
+\end{itemize}
+
+Detecting these patterns informs appropriate modeling in the final regression stage (e.g., including threshold indicators, polynomial terms for U-shapes).
+
+\subsubsection{Maintaining Interpretability for Policy}
+
+Despite the sophisticated machine learning in Stages 1-2, the framework culminates in standard regression output that policy makers can directly interpret:
+\begin{itemize}
+\item Odds ratios with 95\% confidence intervals
+\item P-values for hypothesis testing
+\item Model fit statistics (AIC, BIC, pseudo-$R^2$)
+\item Likelihood ratio tests comparing models
+\end{itemize}
+
+This addresses the ``black box'' criticism of machine learning in policy contexts. The ML stage discovers which variables matter and how; the regression stage quantifies relationships in familiar, interpretable terms.
+
+\subsection{Comparison to Alternative Approaches}
+
+\subsubsection{vs. Traditional Regression with Theory-Driven Interactions}
+
+\textbf{Traditional approach:}
+\begin{itemize}
+\item[$-$] Limited to interactions specified by theory
+\item[$-$] Assumes linear relationships unless manually transformed
+\item[$-$] Risks missing unexpected but important interactions
+\item[$+$] Immediately interpretable output
+\item[$+$] Well-understood inference properties
+\end{itemize}
+
+\textbf{Our framework:}
+\begin{itemize}
+\item[$+$] Discovers interactions from data without pre-specification
+\item[$+$] Automatically detects non-linear relationships
+\item[$+$] Less vulnerable to researcher degrees of freedom
+\item[$+$] Maintains interpretable final output
+\item[$-$] More computationally intensive
+\end{itemize}
+
+\subsubsection{vs. Single Machine Learning Model}
+
+\textbf{Single ML approach:}
+\begin{itemize}
+\item[$-$] Vulnerable to model-specific biases
+\item[$-$] Feature importance may reflect algorithm artifacts
+\item[$-$] No confidence intervals or p-values
+\item[$+$] Can capture complex relationships
+\item[$+$] Often achieves high predictive accuracy
+\end{itemize}
+
+\textbf{Our framework:}
+\begin{itemize}
+\item[$+$] Ensemble consensus filters model-specific artifacts
+\item[$+$] More robust feature selection
+\item[$+$] Provides confidence intervals and p-values via regression stage
+\item[$+$] Comparable or better predictive performance
+\item[$-$] Requires training multiple models
+\end{itemize}
+
+\subsubsection{vs. Pure Machine Learning Without Regression}
+
+\textbf{Pure ML approach:}
+\begin{itemize}
+\item[$-$] Lacks confidence intervals and significance tests
+\item[$-$] Difficult to communicate to non-technical audiences
+\item[$-$] May not satisfy policy requirements for statistical inference
+\item[$+$] Maximum predictive accuracy
+\item[$+$] Fully captures non-linear relationships
+\end{itemize}
+
+\textbf{Our framework:}
+\begin{itemize}
+\item[$+$] Provides standard statistical inference
+\item[$+$] Interpretable for policy communication
+\item[$+$] Meets academic publication standards
+\item[$+$] Still captures complex relationships via PDPs and interactions
+\item[$-$] Slightly lower pure predictive accuracy (but maintains $>0.90$ AUC in ML stage)
+\end{itemize}
+
+\subsection{Extensions and Variations}
+
+The framework is highly flexible and can be adapted to different research contexts:
+
+\subsubsection{Alternative Outcome Types}
+
+\textbf{Count outcomes:} Replace logistic regression with Poisson or negative binomial regression:
+\begin{equation}
+\log(\mathbb{E}[Y|\mathbf{x}]) = \beta_0 + \mathbf{x}^\top\boldsymbol{\beta}
+\end{equation}
+
+\textbf{Continuous outcomes:} Use OLS regression or other appropriate GLMs. The ML expert system stage remains identical; only the final regression stage changes.
+
+\textbf{Time-to-event outcomes:} Apply Cox proportional hazards models:
+\begin{equation}
+h(t|\mathbf{x}) = h_0(t)\exp(\mathbf{x}^\top\boldsymbol{\beta})
+\end{equation}
+
+\textbf{Ordinal outcomes:} Use ordinal logistic regression (proportional odds models).
+
+\subsubsection{Alternative ML Algorithms}
+
+The expert system can incorporate other algorithms:
+\begin{itemize}
+\item \textit{Support Vector Machines} for complex decision boundaries
+\item \textit{Neural Networks} for extremely high-dimensional data
+\item \textit{LightGBM} as alternative gradient boosting implementation
+\item \textit{Extremely Randomized Trees} as Random Forest variant
+\end{itemize}
+
+The key principle is diversity: include algorithms with different inductive biases to maximize robustness of consensus.
+
+\subsubsection{Alternative Consensus Strategies}
+
+Beyond simple counting of top-$k$ appearances, researchers might:
+\begin{itemize}
+\item Weight models by their predictive performance (higher AUC = more weight)
+\item Use rank-aggregation methods (e.g., Borda count)
+\item Apply statistical tests for agreement (e.g., Kendall's W)
+\item Use Bayesian model averaging across model-specific importance rankings
+\end{itemize}
+
+\subsubsection{Longitudinal Extensions}
+
+For panel data with repeated observations:
+\begin{itemize}
+\item Stage 1-2: Train ML models with appropriate handling of clustering (e.g., cluster-based cross-validation)
+\item Stage 3: Fit mixed-effects models or GEE to account for within-person correlation:
+\begin{equation}
+\log\left(\frac{P(Y_{it}=1|\mathbf{x}_{it}, u_i)}{1-P(Y_{it}=1|\mathbf{x}_{it}, u_i)}\right) = \beta_0 + \mathbf{x}_{it}^\top\boldsymbol{\beta} + u_i
+\end{equation}
+where $u_i$ is a person-specific random effect.
+\end{itemize}
+
+\subsection{Limitations and Caveats}
+
+\subsubsection{Computational Cost}
+
+The framework requires training and tuning multiple machine learning models, which can be computationally expensive for very large datasets. However:
+\begin{itemize}
+\item Modern implementations (XGBoost, CatBoost, LightGBM) are highly optimized
+\item Training can be parallelized across models
+\item The investment pays off through more robust findings
+\end{itemize}
+
+\subsubsection{Does Not Guarantee Causal Inference}
+
+Like any observational analysis, this framework identifies associations, not causal effects. While ML can discover unexpected relationships and interactions, it cannot overcome fundamental endogeneity or confounding. For causal inference, researchers should combine this framework with:
+\begin{itemize}
+\item Instrumental variables if available
+\item Regression discontinuity designs where appropriate
+\item Propensity score methods for treatment effect estimation
+\item Difference-in-differences or synthetic control methods for policy evaluation
+\end{itemize}
+
+Recent developments in causal machine learning (e.g., double/debiased machine learning, causal forests) could be integrated into this framework's first stage.
+
+\subsubsection{Still Requires Domain Expertise}
+
+The framework does not replace domain knowledge. Researchers must:
+\begin{itemize}
+\item Carefully construct the initial feature set
+\item Interpret PDPs and interaction plots substantively
+\item Assess whether discovered patterns make theoretical sense
+\item Consider potential confounders and alternative explanations
+\item Communicate findings appropriately given data limitations
+\end{itemize}
+
+Machine learning identifies patterns in data; criminologists must interpret whether patterns reflect genuine phenomena or artifacts of measurement, sampling, or confounding.
+
+\subsubsection{Performance Depends on Feature Quality}
+
+The framework can only work with provided features. If key predictors are absent from the dataset, no amount of sophisticated modeling will recover them. This highlights the continued importance of:
+\begin{itemize}
+\item Theory-driven data collection
+\item Rich measurement of constructs
+\item Including diverse predictor domains
+\item Careful variable construction and validation
+\end{itemize}
+
+\subsection{Recommendations for Implementation}
+
+Based on our experience, we offer practical guidance for researchers adopting this framework:
+
+\subsubsection{Minimum Recommended Expert System}
+
+For most applications, we recommend at minimum:
+\begin{itemize}
+\item One regularized linear model (Lasso or Elastic Net)
+\item One Random Forest model
+\item Two gradient boosting variants (e.g., XGBoost and CatBoost)
+\end{itemize}
+
+This provides adequate algorithmic diversity (linear vs. tree-based, bagging vs. boosting) while remaining computationally manageable.
+
+\subsubsection{Hyperparameter Tuning}
+
+Invest time in proper hyperparameter tuning via cross-validation. Under-tuned models may perform poorly and produce unreliable importance rankings. Consider:
+\begin{itemize}
+\item Randomized search for initial exploration
+\item Grid search for final tuning around promising regions
+\item At least 5-fold stratified cross-validation
+\item Ensuring adequate computation time (hours, not minutes)
+\end{itemize}
+
+\subsubsection{Interpretation Focus}
+
+Prioritize understanding discovered patterns over pure predictive accuracy:
+\begin{itemize}
+\item Generate PDPs for all top-ranked features
+\item Examine SHAP interaction plots for top pairs
+\item Compare importance rankings qualitatively across models
+\item Look for substantively surprising findings that merit deeper investigation
+\end{itemize}
+
+The goal is insight, not just prediction.
+
+\subsubsection{Validation Strategy}
+
+When possible, validate findings on held-out data or via alternative samples:
+\begin{itemize}
+\item Split data into training (80\%) and validation (20\%) sets
+\item Train entire framework on training set only
+\item Verify that top features from training data also predict in validation data
+\item If multiple cohorts or sites available, validate cross-cohort/site
+\end{itemize}
+
+This ensures findings generalize beyond the specific analysis sample.
+
+\section{Conclusion}
+
+This paper introduced, specified, and validated a novel integrated framework for criminology research that combines multi-model machine learning with traditional regression analysis. The framework addresses fundamental limitations in existing quantitative criminology methods:
+
+\textbf{Problem:} Traditional regression struggles with high-dimensional data and complex interactions; single machine learning models risk algorithm-specific artifacts; pure machine learning lacks interpretable inference needed for policy.
+
+\textbf{Solution:} Three-stage framework using (1) diverse ML expert system for robust feature discovery, (2) cross-model consensus for reliable feature selection, and (3) nested regression for interpretable inference.
+
+\textbf{Validation:} Application to adolescent vaping data (72,712 students, 123 features) demonstrated that consensus-selected features all achieved statistical significance in final models, validating the feature selection process.
+
+\textbf{Advantages:}
+\begin{itemize}
+\item Discovers interactions without pre-specification
+\item Robust to model-specific biases through ensemble consensus
+\item Detects non-linear relationships via partial dependence analysis
+\item Maintains interpretability through GLM final stage
+\item Provides confidence intervals and p-values for policy communication
+\end{itemize}
+
+The framework embodies an \textit{abductive analytical paradigm}---bridging inductive data-driven discovery and deductive hypothesis testing. Machine learning generates hypotheses about what matters and how; regression tests and quantifies these hypotheses using standard inferential frameworks. Neither approach alone achieves what their integration enables.
+
+We demonstrated the framework's practical utility through identifying complex predictors of adolescent vaping, revealing: (1) dramatic temporal threshold effects coinciding with COVID-19, (2) counterintuitive inverse relationships between vaping and other substance use challenging polysubstance assumptions, and (3) unexpected positive associations with educational aspirations.
+
+The framework is highly adaptable: it extends to count outcomes (Poisson/negative binomial regression), continuous outcomes (OLS), time-to-event outcomes (Cox models), ordinal outcomes (proportional odds models), and longitudinal data (mixed models/GEE). Researchers can also substitute alternative ML algorithms or consensus strategies while preserving the core three-stage structure.
+
+As quantitative criminology increasingly confronts complex, high-dimensional data from administrative records, social media, sensor networks, and rich surveys, methods that combine machine learning's exploratory power with traditional inference's interpretability will become essential. Our framework provides a principled template for such integration, advancing beyond the either/or debate between traditional and machine learning approaches toward a both/and synthesis that leverages complementary strengths.
+
+Future research should explore extensions including causal machine learning methods, Bayesian model averaging approaches, and applications to additional criminology domains (recidivism prediction, crime pattern analysis, intervention evaluation). The framework's flexibility enables adaptation as both machine learning methods and criminology research questions continue to evolve.
+
+\section*{Data Availability}
+
+The Monitoring the Future data are available from the Inter-university Consortium for Political and Social Research (ICPSR) at the University of Michigan (\url{https://www.icpsr.umich.edu}).
+
+\section*{Code Availability}
+
+Analysis code implementing the complete framework is available from the corresponding author upon reasonable request. We plan to release a Python package implementing this framework for general use.
+
+\section*{Funding}
+
+[Funding information to be provided]
+
+\section*{Competing Interests}
+
+The authors have no relevant financial or non-financial interests to disclose.
+
+\section*{Ethics Approval}
+
+This study was performed in line with the principles of the Declaration of Helsinki. Approval was granted by the Institutional Review Board of the University of Michigan. All analyses were conducted on de-identified data.
+
+\section*{Author Contributions}
+
+S.N. conceptualized the methodological framework, conducted data analysis, and wrote the manuscript. R.T. contributed to data preparation and analysis. Both authors reviewed and approved the final manuscript.
+
+\bibliographystyle{abbrvnat}
+\begin{thebibliography}{99}
+
+\bibitem[Cullen et al.(2019)]{cullen2019}
+Cullen KA, Gentzke AS, Sawdey MD, et al (2019) E-cigarette use among youth in the United States, 2019. JAMA 322(21):2095-2103
+
+\bibitem[Barrington-Trimis et al.(2016)]{barrington2016}
+Barrington-Trimis JL, Urman R, Berhane K, et al (2016) E-cigarettes and future cigarette use. Pediatrics 138(1):e20160379
+
+\bibitem[Miech et al.(2019)]{miech2019}
+Miech RA, Johnston LD, O'Malley PM, et al (2019) Monitoring the Future national survey results on drug use, 1975-2018: Volume I, Secondary school students. Ann Arbor: Institute for Social Research, The University of Michigan
+
+\bibitem[Miech et al.(2023)]{miech2023}
+Miech RA, Johnston LD, O'Malley PM, et al (2023) Monitoring the Future national survey results on drug use, 1975-2022: Volume I, Secondary school students. Ann Arbor: Institute for Social Research, The University of Michigan
+
+\end{thebibliography}
+
+\end{document}
