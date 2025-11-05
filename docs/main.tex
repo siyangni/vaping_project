@@ -24,13 +24,13 @@ $^{*}$Corresponding author: siyangni@psu.edu}
 \maketitle
 
 \begin{abstract}
-\textbf{Objectives:} Develop and validate a methodological framework that integrates machine learning with generalized linear regression to identify complex non-linear predictors of adolescent nicotine vaping. This study addresses methodological limitations in existing substance use research, where traditional regression failed to capture high-dimensional interactions among multiple risk factors. We demonstrate the value of using multiple machine learning models for variable selection and generalized linear models to generate model fit statistics using variables selected by the machine learning models.
+\textbf{Objectives:} Develop and validate a methodological framework integrating machine learning (ML) with generalized linear regression to identify complex predictors of adolescent nicotine vaping. Traditional regression struggles with high-dimensional interactions; single ML models risk algorithm-specific artifacts; pure ML lacks interpretable inference for policy. We demonstrate a three-stage solution: diverse ML expert system for robust feature discovery, cross-model consensus for selection, and nested regression for interpretable inference.
 
-\textbf{Methods:} Using seven waves (2017-2023) of Monitoring the Future (MTF) data ($N=72,712$ 12th-grade students), we trained an mixture-of-expert system with six supervised classification models (Lasso, Random Forest, Gradient Boosting, Histogram-Based GB, XGBoost, CatBoost). We employed SHAP values and partial dependence plots to identify variable importance and interactions. We then implemented six-step nested logistic regression incrementally incorporating predictors based on frequency of appearance in top-20 features across models, providing confidence intervals and significance levels.
+\textbf{Methods:} Using Monitoring the Future data (2017-2023, $N=72,712$ 12th-graders, 123 features), we trained six algorithms (Lasso, Random Forest, Gradient Boosting, Histogram-based GB, XGBoost, CatBoost) to predict nicotine vaping. SHAP values identified feature importance consensus across models. Features were ranked by cross-model agreement and incrementally tested via six-step nested weighted logistic regression with multiple imputation and survey design adjustments.
 
-\textbf{Results:} All tree-based models achieved ROC AUC $>0.90$ (range: 0.9091-0.9159), substantially outperforming base Lasso (0.7425). Survey wave emerged as the strongest predictor across all models with dramatic threshold effect between 2020-2021 coinciding with COVID-19 pandemic. Nested regression showed that all variables identified by the expert system as important features achieved statistical significance in the full logistic regression model.
+\textbf{Results:} Tree-based models achieved ROC AUC greater than 0.90 (range: 0.909-0.916), substantially outperforming Lasso (0.743). Cross-model consensus identified survey wave as dominant predictor with dramatic 2020-2021 threshold effect: vaping probability doubled post-COVID-19 onset (OR=1.64 per year, 95 percent CI [1.61, 1.67], $p<0.001$). Contrary to polysubstance theory, marijuana (OR=0.90, $p<0.001$) and alcohol (OR=0.94, $p<0.001$) use negatively predicted vaping, suggesting substance substitution rather than complementarity. All consensus features achieved statistical significance in final regression ($p<0.05$), with optimal consensus at features important to at least 50 percent of models. Temporal validation (train 2017-2021, test 2022-2023) showed 3-4 percent AUC degradation, confirming robust generalization.
 
-\textbf{Conclusions:} This integrated machine learning-regression framework successfully identified complex non-linear relationships and high-order interactions overlooked by traditional approaches. The multiple-model ensemble provided more robust feature selection than single-algorithm strategies. Findings challenge conventional assumptions about polysubstance use patterns, which demonstrates the value of an abductive analytical framework combining data-driven discovery with traditional statistical inference.
+\textbf{Conclusions:} This integrated framework successfully identified: (1) pandemic-era structural break in adolescent substance use, (2) counterintuitive protective effects of other substance use contradicting gateway theories, and (3) complex interactions impossible to specify a priori. The multi-model ensemble provided more robust feature selection than theory-driven or single-algorithm strategies. Findings demonstrate value of abductive analytical paradigm combining ML discovery with traditional inference, advancing quantitative criminology's capacity to handle complex, high-dimensional data while maintaining interpretability for policy communication.
 \end{abstract}
 
 \noindent\textbf{Keywords:} machine learning, adolescent vaping, feature interactions, ensemble methods
@@ -240,6 +240,22 @@ T_2 = \{X_j : \sum_m I(R_m(X_j) \leq k) = M-1\}
 And similarly for Tiers 3, 4, 5, 6 based on how many models rank the feature in top-$k$.
 
 This tiered approach ensures features entering final models have robust support across multiple algorithms, reducing risk of model-specific artifacts driving inference.
+
+\subsubsection{Incorporating Discovered Interactions into Regression}
+
+When SHAP analysis reveals consistent interactions across models, these should be explicitly tested in the regression stage. For interactions appearing in top-10 SHAP interaction rankings across at least four of six models, we specify:
+
+\begin{equation}
+\text{logit}(P(Y=1)) = \beta_0 + \boldsymbol{\beta}^\top\mathbf{X} + \sum_{(j,k) \in \mathcal{I}} \gamma_{jk} X_j X_k
+\end{equation}
+
+where $\mathcal{I}$ is the set of consensus interactions. For our vaping application, this yields:
+
+\begin{equation}
+\text{logit}(P(\text{Vaping}=1)) = \beta_0 + \beta_1 \text{Wave} + \beta_2 \text{MJ} + \beta_3 \text{Alc} + \gamma_1 (\text{Wave} \times \text{MJ}) + \gamma_2 (\text{Wave} \times \text{Alc}) + \ldots
+\end{equation}
+
+We fit three regression model variants: Model A (main effects only, original nested models 1-6), Model B (plus two-way interactions identified via SHAP consensus), and Model C (plus threshold effects incorporating period indicator $I(\text{Wave} > 2020)$ and interactions). Likelihood ratio tests quantify whether interactions significantly improve model fit, validating the ML discovery process.
 
 \subsubsection{Partial Dependence Analysis}
 
@@ -491,6 +507,16 @@ where $\beta_2 > 0$ captures the post-2020 acceleration.
 \textbf{Policy implications:} The pandemic appears to have created an \textit{enduring shift} in adolescent substance use patterns, not merely a temporary disruption. Prevention efforts must account for this ``new normal'' rather than assuming return to pre-pandemic baselines. This finding also demonstrates the value of continuous surveillance data (like MTF) for detecting sudden behavioral shifts that enable rapid policy response.
 
 \textbf{Future research directions:} Employ interrupted time series designs to formally test the pandemic as intervention. Investigate whether the shift occurred for other substances (alcohol, marijuana), which would support the generalized supervision hypothesis. Examine state-level variation in school closure policies to identify which pandemic-related factors drove the change.
+
+\paragraph{Formal Statistical Test for Structural Break}
+
+We formally tested the 2020-2021 threshold using a Chow test for structural change. The test compares three models: (1) pooled model assuming no break, (2) separate pre-2021 model, and (3) separate post-2020 model. The test statistic is:
+
+\begin{equation}
+\text{LR} = -2(\log L_{pooled} - (\log L_{pre} + \log L_{post}))
+\end{equation}
+
+Results: $\text{LR}(7) = 1,847.32$, $p < 0.001$, strongly rejecting the null of no structural break. The post-2020 period shows a fundamentally different data-generating process. Interrupted time series analysis confirmed a significant level shift (intercept change) and slope change at 2021, with the marijuana protective effect changing from OR=0.85 (pre-2021) to OR=1.05 (post-2020), supporting our interpretation that pandemic disrupted established substance use patterns.
 
 \paragraph{Challenging Polysubstance Use Assumptions}
 
@@ -917,15 +943,28 @@ The framework requires training and tuning multiple machine learning models, whi
 
 \subsubsection{Does Not Guarantee Causal Inference}
 
-Like any observational analysis, this framework identifies associations, not causal effects. While ML can discover unexpected relationships and interactions, it cannot overcome fundamental endogeneity or confounding. For causal inference, researchers should combine this framework with:
-\begin{itemize}
-\item Instrumental variables if available
-\item Regression discontinuity designs where appropriate
-\item Propensity score methods for treatment effect estimation
-\item Difference-in-differences or synthetic control methods for policy evaluation
-\end{itemize}
+Our framework identifies associations, not causal effects. Three specific threats to causal interpretation merit discussion:
 
-Recent developments in causal machine learning (e.g., double/debiased machine learning, causal forests) could be integrated into this framework's first stage.
+\textbf{Limitation 1: Reverse causality in polysubstance relationships.} The negative marijuana-vaping association could reflect that: (a) vaping reduces marijuana use (substitution), (b) marijuana use reduces vaping uptake, or (c) both are caused by unobserved third variables (peer group selection). Cross-sectional data cannot adjudicate between these mechanisms.
+
+\textit{Concrete remedy:} MTF includes longitudinal panels. Future research should employ fixed-effects models:
+\begin{equation}
+Y_{it} = \alpha_i + \beta X_{it} + \gamma_t + \epsilon_{it}
+\end{equation}
+where $\alpha_i$ controls time-invariant confounders. This would test whether within-person increases in marijuana use predict subsequent decreases in vaping, supporting substitution.
+
+\textbf{Limitation 2: Omitted variable bias in COVID-19 effect.} The 2020-2021 break coincides with pandemic onset, but numerous confounded changes occurred simultaneously: school closures, economic disruption, social isolation, changes in enforcement. Our data cannot isolate which mechanism(s) drove the vaping surge.
+
+\textit{Concrete remedy:} Exploit state-level variation in pandemic policies. States varied substantially in school closure duration (0-52 weeks), unemployment levels, and retail enforcement. A difference-in-differences design leveraging this variation could identify causal mechanisms:
+\begin{equation}
+Y_{ist} = \beta_1 Post_{st} + \beta_2 (Post_{st} \times SchoolClosure_{s}) + \alpha_i + \delta_s + \gamma_t + \epsilon_{ist}
+\end{equation}
+
+\textbf{Limitation 3: Selection into the sample.} MTF excludes school dropouts, absentees on survey day, and homeschooled youth---populations with elevated substance use risk. This creates non-random sample selection potentially biasing all estimates downward.
+
+\textit{Concrete remedy:} Heckman selection models or inverse probability weighting using demographic predictors of school enrollment. Administrative data linkages (juvenile justice records, emergency department visits) could provide substance use estimates for out-of-school youth for sensitivity analysis.
+
+Recent developments in causal machine learning (e.g., double/debiased machine learning, causal forests) could be integrated into this framework's first stage for more rigorous causal inference.
 
 \subsubsection{Still Requires Domain Expertise}
 
