@@ -278,7 +278,7 @@ Development of this code was supported by [funding information]. The code builds
 
 ---
 
-**Last Updated**: 2025-11-05
-**Code Version**: 1.0.0
+**Last Updated**: 2025-11-07
+**Code Version**: 2.0.0
 **Maintainer**: Siyang Ni
 **Repository**: https://github.com/siyangni/vaping_project

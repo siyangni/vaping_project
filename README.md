@@ -12,8 +12,57 @@ This repository contains the complete computational pipeline for analyzing nicot
 
 ---
 
+## Project Status
+
+**Current Version**: 2.0 (November 2025)
+**Status**: Comprehensive revisions complete, ready for JQC submission
+
+This repository has undergone extensive methodological enhancements:
+
+### Phase 1: Initial Development (v0.5)
+- Core ML pipeline with 6 classifiers
+- SHAP-based feature importance analysis
+- Basic exploratory analysis and visualization
+
+### Phase 2: JQC Initial Revisions (v1.0)
+- ✅ Survey weights implementation (preserving MTF sampling design)
+- ✅ Temporal validation (train 2017-2021, test 2022-2023)
+- ✅ Baseline comparisons (framework vs. simpler approaches)
+- ✅ Comprehensive robustness checks
+- ✅ Statistical vs. practical significance analysis
+- ✅ Strengthened criminological framing
+
+### Phase 3: Advanced Methodological Enhancements (v2.0)
+**13 Critical Improvements Implemented** (see [IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md)):
+
+**Methodological Rigor**:
+1. Interaction terms in regression (validating ML discoveries)
+2. Multiple imputation using MICE (proper uncertainty quantification)
+3. Structural break analysis (COVID-19 threshold testing)
+4. Model calibration assessment
+5. SHAP stability analysis (bootstrap validation)
+6. SHAP dependence plots (interaction visualization)
+7. Incremental predictive value testing
+
+**Substantive Criminological Analyses**:
+8. Gender-specific substance use pathways
+9. Racial/ethnic disparities in vaping trends
+10. Regional variation analysis
+
+**Manuscript Enhancements**:
+11. Improved abstract (more specific methods and findings)
+12. New section on interaction testing in regression
+13. Enhanced limitations section with formal remedies
+
+For detailed implementation notes, see:
+- **[IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md)** - Complete technical details of all 13 enhancements
+- **[REVISION_NOTES.md](REVISION_NOTES.md)** - JQC revision documentation
+
+---
+
 ## Table of Contents
 
+- [Project Status](#project-status)
 - [Repository Structure](#repository-structure)
 - [System Requirements](#system-requirements)
 - [Installation](#installation)
@@ -32,17 +81,22 @@ This repository contains the complete computational pipeline for analyzing nicot
 
 ```
 vaping_project/
-├── README.md                          # This file
+├── README.md                          # This file - Project overview
+├── IMPLEMENTATION_SUMMARY.md          # Summary of 13 methodological enhancements
+├── REVISION_NOTES.md                  # JQC revision implementation notes
 ├── LICENSE                            # MIT License
 ├── CITATION.cff                       # Citation metadata
 ├── requirements.txt                   # Python dependencies
 ├── environment.yml                    # Conda environment specification
-├── run_all.sh                         # Master script to reproduce all analyses
+├── run_all.sh                         # Master script for base analyses
+├── run_revision_analyses.sh           # Master script for all revision analyses
 │
 ├── scripts/                           # R preprocessing scripts
 │   ├── 01_importing_data.R           # Data loading from raw TSV files
 │   ├── 02_preprocessing.R            # Feature engineering & cleaning
-│   └── 03_EDA.R                      # Exploratory data analysis
+│   ├── 02b_preprocessing_with_weights.R  # Preprocessing preserving survey weights
+│   ├── 03_EDA.R                      # Exploratory data analysis
+│   └── 03_mice_imputation.R          # Multiple imputation using MICE
 │
 ├── src/                               # Python source modules
 │   ├── __init__.py
@@ -51,17 +105,38 @@ vaping_project/
 │   ├── interpretability.py           # SHAP and feature importance analysis
 │   └── visualization.py              # Plotting functions
 │
-├── notebooks/                         # Jupyter notebooks (analysis & visualization)
+├── notebooks/                         # Analysis notebooks (Jupyter & Python scripts)
 │   ├── 01_preprocessing_12.ipynb     # Python preprocessing (12th grade)
 │   ├── 02_preprocessing_08_10.ipynb  # Python preprocessing (8th-10th grade)
 │   ├── 03_modelling.ipynb            # Main ML pipeline & model comparison
 │   ├── 04_regression.ipynb           # Regression analysis
-│   └── 05_charts.ipynb               # Publication-ready visualizations
+│   ├── 05_charts.ipynb               # Publication-ready visualizations
+│   │
+│   ├── # JQC Revision Analyses (06-09)
+│   ├── 06_weighted_regression.ipynb  # Survey-weighted regression
+│   ├── 07_temporal_validation.py     # Temporal validation (2017-2021 → 2022-2023)
+│   ├── 08_baseline_comparisons.py    # Framework validation vs. alternatives
+│   ├── 09_robustness_checks.py       # Robustness to methodological choices
+│   │
+│   ├── # Advanced Methodological Analyses (10-13, 17-19)
+│   ├── 10_interaction_regression.py  # Interaction terms in regression
+│   ├── 11_regression_with_mice.py    # Regression with multiple imputation
+│   ├── 12_structural_break_analysis.py  # COVID-19 structural break tests
+│   ├── 13_model_calibration.py       # Model calibration analysis
+│   ├── 17_shap_stability.py          # SHAP feature importance stability
+│   ├── 18_shap_dependence.py         # SHAP interaction visualizations
+│   ├── 19_incremental_value.py       # Incremental predictive value analysis
+│   │
+│   └── # Substantive Criminological Analyses (14-16)
+│       ├── 14_gender_interactions.py     # Gender-specific pathways
+│       ├── 15_racial_disparities.py      # Racial/ethnic disparities
+│       └── 16_regional_analysis.py       # Regional variation analysis
 │
-├── docs/                              # Documentation
+├── docs/                              # Documentation & Manuscript
 │   ├── DATA_AVAILABILITY.md          # Data access instructions
 │   ├── CODE_AVAILABILITY.md          # Code sharing statement
-│   └── COMPUTATIONAL_NOTES.md        # Technical details
+│   ├── COMPUTATIONAL_NOTES.md        # Technical details
+│   └── main.tex                      # LaTeX manuscript for JQC
 │
 ├── outputs/                           # Generated analysis outputs
 │   ├── models/                       # Trained model artifacts (.joblib, .pkl)
@@ -71,7 +146,8 @@ vaping_project/
 └── figures/                           # Publication figures
     ├── shap_summary_plot.png
     ├── aggregated_shap_importance.png
-    └── top_20_aggregated_shap_importance.png
+    ├── top_20_aggregated_shap_importance.png
+    └── [Additional figures generated by analyses 06-19]
 ```
 
 ---
@@ -165,21 +241,74 @@ original_core_2023_0810.tsv
 
 ### Complete Analysis Pipeline (Automated)
 
-To reproduce all results from raw data to final figures:
+The project provides two master scripts for complete reproducibility:
+
+#### Option 1: Base Analysis Pipeline
+
+To reproduce the core ML analysis (notebooks 01-05):
 
 ```bash
 # Ensure data files are in ~/work/vaping_project_data/original_all_core/
-# Then run:
 bash run_all.sh
 ```
 
-This master script executes the entire pipeline sequentially:
+This script executes:
 1. R preprocessing (data loading, feature engineering, cleaning)
 2. Python modeling (6 ML classifiers with hyperparameter tuning)
 3. Interpretability analysis (SHAP values, feature importance)
 4. Visualization generation (publication figures)
 
-**Expected runtime**: 2-6 hours depending on hardware (primarily hyperparameter tuning)
+**Expected runtime**: 2-6 hours
+
+#### Option 2: Complete Revision Analysis (Recommended)
+
+To reproduce ALL analyses including JQC revisions and enhancements (notebooks 06-19):
+
+```bash
+# Ensure processed data exists (run run_all.sh first if needed)
+bash run_revision_analyses.sh
+```
+
+This comprehensive script executes:
+1. Survey-weighted regression analysis
+2. Temporal validation (2017-2021 → 2022-2023)
+3. Baseline comparisons (framework validation)
+4. Robustness checks (imputation, thresholds, splits)
+5. Interaction regression (Wave × Substance interactions)
+6. MICE multiple imputation
+7. Structural break analysis (COVID-19 testing)
+8. Model calibration analysis
+9. Gender interaction analysis
+10. Racial disparity analysis
+11. Regional variation analysis
+12. SHAP stability analysis
+13. SHAP dependence plots
+14. Incremental value analysis
+
+**Expected runtime**: 4-8 hours total
+
+#### Option 3: Run All Enhancements Separately
+
+To run individual enhancement analyses:
+
+```bash
+# Critical methodological fixes
+python notebooks/10_interaction_regression.py
+Rscript scripts/03_mice_imputation.R
+python notebooks/11_regression_with_mice.py
+python notebooks/12_structural_break_analysis.py
+
+# Substantive criminological analyses
+python notebooks/14_gender_interactions.py
+python notebooks/15_racial_disparities.py
+python notebooks/16_regional_analysis.py
+
+# Advanced analytical extensions
+python notebooks/13_model_calibration.py
+python notebooks/17_shap_stability.py
+python notebooks/18_shap_dependence.py
+python notebooks/19_incremental_value.py
+```
 
 ### Step-by-Step Manual Execution
 
@@ -319,7 +448,45 @@ Publication Outputs
 
 ## Key Findings
 
-(To be completed after manuscript acceptance)
+### Methodological Contributions
+
+1. **Multi-Model Consensus Framework**: Achieves superior performance (AUC ≈ 0.92) compared to single-model approaches while protecting against model-specific artifacts
+2. **Temporal Stability**: Framework shows excellent generalization across time periods (3-4% AUC degradation from 2017-2021 to 2022-2023)
+3. **Robustness Validation**: Results stable across multiple methodological choices (imputation strategy, consensus threshold, train-test splits)
+4. **Calibration Assessment**: Tree-based models achieve high discrimination but require recalibration for risk scoring applications
+
+### Substantive Findings
+
+**Temporal Dynamics**:
+- **Dramatic COVID-19 Effect**: Survey wave is the strongest predictor (OR = 1.64), with structural break analysis confirming significant regime shift in 2020-2021
+- Vaping prevalence doubled during pandemic period, suggesting natural experiment for studying substance use under reduced supervision
+
+**Counterintuitive Polysubstance Patterns**:
+- **Marijuana Protective Effect**: Marijuana use associated with 10% lower vaping odds (OR = 0.90), challenging traditional gateway theory
+- **Alcohol Protective Effect**: Alcohol use shows 6% lower vaping odds (OR = 0.94)
+- Suggests substance substitution rather than complementarity, or reflects changing substance hierarchies among youth
+
+**Demographic Disparities**:
+- **Gender Differences**: Substance use effects vary by gender (stronger marijuana protective effect among females)
+- **Racial Disparities**: Significant variation across racial/ethnic groups with evolving trends over time
+- **Regional Variation**: Geographic differences persist, potentially reflecting state policy variation
+
+**Effect Size Hierarchy**:
+- **Large effects** (>15% change): Temporal trends, developmental trajectories
+- **Medium effects** (6-15% change): Substance use patterns, peer influences
+- **Small effects** (1-5% change): Demographic factors, geographic variation
+- **Trivial effects** (<1% change): Some lower-tier consensus features (statistically significant but substantively negligible)
+
+### Theoretical Implications
+
+Results engage multiple criminological frameworks:
+- **Social Control Theory**: Reduced supervision during COVID-19
+- **General Strain Theory**: Pandemic stress and coping mechanisms
+- **Social Learning Theory**: Changing peer norm diffusion
+- **Developmental Criminology**: Age-graded trajectories in vaping adoption
+- **Problem Behavior Theory**: Unexpected substance substitution patterns
+
+For complete details, see manuscript in [docs/main.tex](docs/main.tex)
 
 ---
 
@@ -370,5 +537,7 @@ This research uses data from the Monitoring the Future study, which is funded by
 
 ---
 
-**Last Updated**: 2025-11-05
-**Repository Version**: 1.0.0
+**Last Updated**: 2025-11-07
+**Repository Version**: 2.0.0
+**Analysis Status**: All 13 methodological enhancements implemented
+**Manuscript Status**: Ready for JQC submission
