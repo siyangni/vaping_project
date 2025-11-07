@@ -14,8 +14,20 @@ This repository contains the complete computational pipeline for analyzing nicot
 
 ## Project Status
 
-**Current Version**: 2.0 (November 2025)
-**Status**: Comprehensive revisions complete, ready for JQC submission
+**Current Version**: 2.1 (November 2025)
+**Status**: Comprehensive revisions complete + **🆕 Interactive Jupyter Notebook Workflow**
+
+### 🎉 What's New in Version 2.1
+
+**Major Update**: The entire analysis pipeline has been reorganized for interactive execution:
+
+- ✅ **All 19 analyses** now available as Jupyter notebooks (.ipynb)
+- ✅ **Master interactive guide** (`00_MASTER_INTERACTIVE_WORKFLOW.ipynb`)
+- ✅ **Cell-by-cell execution** for step-by-step understanding
+- ✅ **Better for teaching**, peer review, and exploratory analysis
+- ✅ **Legacy scripts** moved to `retired/` folder with documentation
+
+**Workflow Type**: Interactive notebooks (recommended) + Automated shell scripts (still available)
 
 This repository has undergone extensive methodological enhancements:
 
@@ -105,32 +117,38 @@ vaping_project/
 │   ├── interpretability.py           # SHAP and feature importance analysis
 │   └── visualization.py              # Plotting functions
 │
-├── notebooks/                         # Analysis notebooks (Jupyter & Python scripts)
+├── notebooks/                         # 🎯 Interactive Jupyter Notebooks (ALL ANALYSES)
+│   ├── 00_MASTER_INTERACTIVE_WORKFLOW.ipynb  # 🌟 START HERE - Interactive guide
+│   │
+│   ├── # Core Analysis Pipeline (01-05)
 │   ├── 01_preprocessing_12.ipynb     # Python preprocessing (12th grade)
 │   ├── 02_preprocessing_08_10.ipynb  # Python preprocessing (8th-10th grade)
-│   ├── 03_modelling.ipynb            # Main ML pipeline & model comparison
+│   ├── 03_modelling.ipynb            # 🔥 Main ML pipeline & model comparison
 │   ├── 04_regression.ipynb           # Regression analysis
 │   ├── 05_charts.ipynb               # Publication-ready visualizations
 │   │
 │   ├── # JQC Revision Analyses (06-09)
 │   ├── 06_weighted_regression.ipynb  # Survey-weighted regression
-│   ├── 07_temporal_validation.py     # Temporal validation (2017-2021 → 2022-2023)
-│   ├── 08_baseline_comparisons.py    # Framework validation vs. alternatives
-│   ├── 09_robustness_checks.py       # Robustness to methodological choices
+│   ├── 07_temporal_validation.ipynb  # Temporal validation (2017-2021 → 2022-2023)
+│   ├── 08_baseline_comparisons.ipynb # Framework validation vs. alternatives
+│   ├── 09_robustness_checks.ipynb    # Robustness to methodological choices
 │   │
 │   ├── # Advanced Methodological Analyses (10-13, 17-19)
-│   ├── 10_interaction_regression.py  # Interaction terms in regression
-│   ├── 11_regression_with_mice.py    # Regression with multiple imputation
-│   ├── 12_structural_break_analysis.py  # COVID-19 structural break tests
-│   ├── 13_model_calibration.py       # Model calibration analysis
-│   ├── 17_shap_stability.py          # SHAP feature importance stability
-│   ├── 18_shap_dependence.py         # SHAP interaction visualizations
-│   ├── 19_incremental_value.py       # Incremental predictive value analysis
+│   ├── 10_interaction_regression.ipynb  # Interaction terms in regression
+│   ├── 11_regression_with_mice.ipynb    # Regression with multiple imputation
+│   ├── 12_structural_break_analysis.ipynb  # COVID-19 structural break tests
+│   ├── 13_model_calibration.ipynb       # Model calibration analysis
+│   ├── 17_shap_stability.ipynb          # SHAP feature importance stability
+│   ├── 18_shap_dependence.ipynb         # SHAP interaction visualizations
+│   ├── 19_incremental_value.ipynb       # Incremental predictive value analysis
 │   │
 │   └── # Substantive Criminological Analyses (14-16)
-│       ├── 14_gender_interactions.py     # Gender-specific pathways
-│       ├── 15_racial_disparities.py      # Racial/ethnic disparities
-│       └── 16_regional_analysis.py       # Regional variation analysis
+│       ├── 14_gender_interactions.ipynb     # Gender-specific pathways
+│       ├── 15_racial_disparities.ipynb      # Racial/ethnic disparities
+│       └── 16_regional_analysis.ipynb       # Regional variation analysis
+│
+├── retired/                           # Legacy Python scripts (converted to notebooks)
+│   └── README.md                     # Documentation of retired scripts
 │
 ├── docs/                              # Documentation & Manuscript
 │   ├── DATA_AVAILABILITY.md          # Data access instructions
@@ -239,9 +257,36 @@ original_core_2023_0810.tsv
 
 ## Reproducibility Instructions
 
+### 🆕 Interactive Workflow (RECOMMENDED)
+
+**Version 2.0** now provides a fully interactive Jupyter notebook workflow for easier exploration, teaching, and reproducibility.
+
+#### Quick Start: Interactive Analysis
+
+```bash
+# 1. Ensure data is prepared (run R preprocessing first)
+Rscript scripts/01_importing_data.R
+Rscript scripts/02_preprocessing.R
+
+# 2. Launch Jupyter
+jupyter notebook notebooks/
+
+# 3. Open 00_MASTER_INTERACTIVE_WORKFLOW.ipynb
+# This master notebook guides you through all 19 analyses
+```
+
+**Benefits of Interactive Workflow**:
+- ✅ Run analyses cell-by-cell for step-by-step understanding
+- ✅ Modify parameters and immediately see results
+- ✅ Add custom visualizations and exploratory analysis
+- ✅ Better for teaching, presentations, and peer review
+- ✅ All analyses now in Jupyter notebooks (no separate scripts)
+
+---
+
 ### Complete Analysis Pipeline (Automated)
 
-The project provides two master scripts for complete reproducibility:
+For batch execution, the project provides two master scripts:
 
 #### Option 1: Base Analysis Pipeline
 
@@ -287,28 +332,29 @@ This comprehensive script executes:
 
 **Expected runtime**: 4-8 hours total
 
-#### Option 3: Run All Enhancements Separately
+#### Option 3: Run Individual Analyses Interactively
 
-To run individual enhancement analyses:
+To run specific analyses, open notebooks in Jupyter:
 
 ```bash
-# Critical methodological fixes
-python notebooks/10_interaction_regression.py
-Rscript scripts/03_mice_imputation.R
-python notebooks/11_regression_with_mice.py
-python notebooks/12_structural_break_analysis.py
+# Launch Jupyter
+jupyter notebook notebooks/
 
-# Substantive criminological analyses
-python notebooks/14_gender_interactions.py
-python notebooks/15_racial_disparities.py
-python notebooks/16_regional_analysis.py
-
-# Advanced analytical extensions
-python notebooks/13_model_calibration.py
-python notebooks/17_shap_stability.py
-python notebooks/18_shap_dependence.py
-python notebooks/19_incremental_value.py
+# Then open any notebook:
+# - 10_interaction_regression.ipynb (Critical methodological fixes)
+# - 11_regression_with_mice.ipynb (Multiple imputation)
+# - 12_structural_break_analysis.ipynb (COVID-19 structural break)
+# - 13_model_calibration.ipynb (Model calibration)
+# - 14_gender_interactions.ipynb (Gender pathways)
+# - 15_racial_disparities.ipynb (Racial/ethnic trends)
+# - 16_regional_analysis.ipynb (Regional variation)
+# - 17_shap_stability.ipynb (SHAP stability)
+# - 18_shap_dependence.ipynb (SHAP interactions)
+# - 19_incremental_value.ipynb (Nested models)
 ```
+
+**Note**: Legacy Python scripts (.py files) have been moved to `retired/` folder.
+All analyses are now available as interactive Jupyter notebooks (.ipynb).
 
 ### Step-by-Step Manual Execution
 
@@ -329,14 +375,20 @@ Rscript scripts/03_EDA.R
 - `~/work/vaping_project_data/processed_data_g12.csv`
 - `~/work/vaping_project_data/processed_data_g12n.csv` (final cleaned data)
 
-#### Step 2: Machine Learning Modeling (Python)
+#### Step 2: Machine Learning Modeling (Python - Interactive)
 
 ```bash
 # Activate environment
 conda activate vaping_env  # or: source venv/bin/activate
 
-# Run notebooks in order
-jupyter notebook notebooks/03_modelling.ipynb
+# Launch Jupyter and run notebooks interactively
+jupyter notebook notebooks/
+
+# Recommended order:
+# 1. 03_modelling.ipynb - Main ML analysis
+# 2. 04_regression.ipynb - Regression analysis
+# 3. 05_charts.ipynb - Visualizations
+# 4. 06-19 (any order based on research questions)
 ```
 
 **Key configurations** (set in `notebooks/03_modelling.ipynb`):
