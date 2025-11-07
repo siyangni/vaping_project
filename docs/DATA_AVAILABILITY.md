@@ -160,6 +160,6 @@ This data availability statement complies with:
 
 ---
 
-**Last Updated**: 2025-11-05
-**Document Version**: 1.0
+**Last Updated**: 2025-11-07
+**Document Version**: 2.0
 **Repository**: https://github.com/siyangni/vaping_project

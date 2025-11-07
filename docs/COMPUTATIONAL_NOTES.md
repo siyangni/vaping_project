@@ -295,9 +295,10 @@ summaryRprof("output.prof")
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0.0 | 2025-11-05 | Initial release |
+| 2.0.0 | 2025-11-07 | Added comprehensive revisions and enhancements |
 
 ---
 
-**Last Updated**: 2025-11-05
-**Document Version**: 1.0
+**Last Updated**: 2025-11-07
+**Document Version**: 2.0
 **Contact**: [GitHub Issues](https://github.com/siyangni/vaping_project/issues)
