@@ -22,6 +22,7 @@ import os
 import logging
 import warnings
 import joblib
+from joblib import Parallel, delayed
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -528,7 +529,7 @@ preprocessor = ColumnTransformer(
 
 # Create the pipeline
 lasso_pipeline = Pipeline(steps=[('preprocessor', preprocessor),
-                                 ('classifier', LogisticRegression(penalty='l1', solver='saga'))])
+                                 ('classifier', LogisticRegression(l1_ratio=1, solver='saga'))])
 # Define an expanded tuning grid.
 # - 'classifier__C': A wide range of regularization strengths.
 # - 'classifier__tol': Different tolerance levels for stopping criteria.
@@ -659,7 +660,8 @@ perm_results = permutation_importance(
     y_test,
     scoring='roc_auc',
     n_repeats=10,
-    random_state=RANDOM_STATE
+    random_state=RANDOM_STATE,
+    n_jobs=-1  # Use all available cores for parallel computation
 )
 
 perm_imp_df = pd.DataFrame({
@@ -808,13 +810,13 @@ RANDOM_STATE = 42
 # This pipeline consists of:
 #  - preprocessor: your existing preprocessor for data cleaning/encoding.
 #  - poly: PolynomialFeatures with degree 2 (pairwise interactions only, no bias).
-#  - classifier: LogisticRegression with L1 penalty (sparse model) using the liblinear solver.
+#  - classifier: LogisticRegression with L1 penalty (sparse model) using the saga solver.
 pipeline = Pipeline([
     ('preprocessor', preprocessor),
     ('poly', PolynomialFeatures(degree=2, interaction_only=True, include_bias=False)),
     ('classifier', LogisticRegression(
-        penalty='l1',
-        solver='liblinear',
+        l1_ratio=1,
+        solver='saga',
         random_state=RANDOM_STATE,
         max_iter=1000
     ))
@@ -827,8 +829,8 @@ pipeline = Pipeline([
 # In this example, we tune the inverse regularization strength 'C' for logistic regression.
 param_grid = {
     'classifier__C': [0.001, 0.01, 0.1, 1],
-    'classifier__penalty': ['l1', 'l2'],
-    'classifier__solver': ['liblinear'],  # 'saga' could also be tested if using larger datasets
+    'classifier__l1_ratio': [1, 0],  # 1 for L1, 0 for L2
+    'classifier__solver': ['saga'],  # saga supports both L1 and L2 penalties
     'classifier__max_iter': [500, 1000],
     'classifier__tol': [1e-4, 1e-3, 1e-2]
 }
@@ -1032,13 +1034,13 @@ RANDOM_STATE = 42
 # This pipeline consists of:
 #  - preprocessor: your existing preprocessor for data cleaning/encoding.
 #  - poly: PolynomialFeatures with degree 2 (pairwise interactions only, no bias).
-#  - classifier: LogisticRegression with L1 penalty (sparse model) using the liblinear solver.
+#  - classifier: LogisticRegression with L1 penalty (sparse model) using the saga solver.
 pipeline = Pipeline([
     ('preprocessor', preprocessor),
     ('poly', PolynomialFeatures(degree=3, interaction_only=True, include_bias=False)),
     ('classifier', LogisticRegression(
-        penalty='l1',
-        solver='liblinear',
+        l1_ratio=1,
+        solver='saga',
         random_state=RANDOM_STATE,
         max_iter=500
     ))
@@ -1051,8 +1053,8 @@ pipeline = Pipeline([
 # In this example, we tune the inverse regularization strength 'C' for logistic regression.
 param_grid = {
     'classifier__C': [0.01, 0.1, 1],
-    'classifier__penalty': ['l1'],
-    'classifier__solver': ['liblinear'],
+    'classifier__l1_ratio': [1],  # 1 for L1 penalty
+    'classifier__solver': ['saga'],  # saga supports L1 penalty
     'classifier__max_iter': [500, 1000],
     'classifier__tol': [1e-4]
 }
@@ -1635,7 +1637,7 @@ try:
         n_iter=50,  # Increase or decrease based on resources
         cv=cv_gbc,
         scoring=SCORING_METRIC,
-        n_jobs=24,  # Use all available cores
+        n_jobs=-1,  # Use all available cores
         random_state=RANDOM_STATE,
         verbose=VERBOSE
     )
@@ -2138,11 +2140,11 @@ for (bf1, bf2), importance in sorted_base_feature_interactions[:50]:
 
 # %%
 # 3. Create a matrix for the heatmap
-num_base_features = len(base_feature_names)
+num_base_features = len(base_feature_list)
 interaction_matrix = np.zeros((num_base_features, num_base_features))
 
-for i, bf1 in enumerate(base_feature_names):
-    for j, bf2 in enumerate(base_feature_names):
+for i, bf1 in enumerate(base_feature_list):
+    for j, bf2 in enumerate(base_feature_list):
         # Use the sorted tuple for lookup
         key = tuple(sorted((bf1, bf2)))
         if key in base_feature_interaction_importance:
@@ -2154,8 +2156,8 @@ for i, bf1 in enumerate(base_feature_names):
 plt.figure(figsize=(30, 28))
 plt.imshow(interaction_matrix, cmap='coolwarm', aspect='auto')
 plt.colorbar(label='Aggregated Interaction Strength')
-plt.xticks(range(num_base_features), base_feature_names, rotation=45, ha="right")
-plt.yticks(range(num_base_features), base_feature_names)
+plt.xticks(range(num_base_features), base_feature_list, rotation=45, ha="right")
+plt.yticks(range(num_base_features), base_feature_list)
 plt.title('Aggregated SHAP Interaction Between Base Features')
 plt.tight_layout()
 plt.show()
@@ -2425,7 +2427,7 @@ try:
         n_iter=50,  # Increase or decrease based on resources
         cv=cv_gbc,
         scoring=SCORING_METRIC,
-        n_jobs=24,  # Use all available cores
+        n_jobs=-1,  # Use all available cores
         random_state=RANDOM_STATE,
         verbose=VERBOSE
     )
@@ -4259,15 +4261,28 @@ for feature in original_categorical_features:
     feature_mapping[feature] = matched_cols
 
 # Now do your SHAP interaction aggregation
-aggregated_interaction_matrix = np.zeros((len(original_categorical_features), len(original_categorical_features)))
+# Parallelize the computation for better performance
+def compute_single_interaction(i, j, feature_i, feature_j, interaction_values, feature_mapping, feature_names):
+    """Compute interaction value for a single feature pair."""
+    indices_i = [feature_names.tolist().index(c) for c in feature_mapping[feature_i]]
+    indices_j = [feature_names.tolist().index(c) for c in feature_mapping[feature_j]]
+    value = np.sum(np.abs(interaction_values[:, indices_i, :][:, :, indices_j]))
+    return i, j, value
 
-for i, feature_i in enumerate(original_categorical_features):
-    for j, feature_j in enumerate(original_categorical_features):
-        indices_i = [feature_names.tolist().index(c) for c in feature_mapping[feature_i]]
-        indices_j = [feature_names.tolist().index(c) for c in feature_mapping[feature_j]]
-        
-        # Sum absolute interaction values for these columns
-        aggregated_interaction_matrix[i, j] = np.sum(np.abs(interaction_values[:, indices_i, :][:, :, indices_j]))
+# Parallelize the nested loop computation
+print(f"Computing {len(original_categorical_features)**2} interaction values in parallel...")
+results = Parallel(n_jobs=-1, verbose=1)(
+    delayed(compute_single_interaction)(
+        i, j, feature_i, feature_j, interaction_values, feature_mapping, feature_names
+    )
+    for i, feature_i in enumerate(original_categorical_features)
+    for j, feature_j in enumerate(original_categorical_features)
+)
+
+# Populate matrix from parallel results
+aggregated_interaction_matrix = np.zeros((len(original_categorical_features), len(original_categorical_features)))
+for i, j, value in results:
+    aggregated_interaction_matrix[i, j] = value
 
 aggregated_interaction_df = pd.DataFrame(
     aggregated_interaction_matrix,
@@ -4279,31 +4294,46 @@ print("Aggregated Interaction DataFrame:\n", aggregated_interaction_df)
 
 # %%
 # Step 1: Store interactions and their values, avoiding self-interactions AND duplicates
-interaction_results = []
+# Parallelize for better performance
+def compute_pairwise_interaction(i, feature_i, j, feature_j, interaction_values, feature_mapping, feature_names):
+    """Compute interaction for a unique feature pair."""
+    # Get indices for feature_i and feature_j
+    indices_i = [
+        feature_names.tolist().index(col) 
+        for col in feature_mapping[feature_i] 
+        if col in feature_names.tolist()
+    ]
+    indices_j = [
+        feature_names.tolist().index(col) 
+        for col in feature_mapping[feature_j] 
+        if col in feature_names.tolist()
+    ]
+    
+    if not indices_i or not indices_j:
+        return None
+    
+    # Compute interaction value
+    value = np.sum(np.abs(interaction_values[:, indices_i, :][:, :, indices_j]))
+    return ((feature_i, feature_j), value)
 
-for i, feature_i in enumerate(original_categorical_features):
-    # Only loop j from i+1 to end, ensuring j > i
-    for j in range(i + 1, len(original_categorical_features)):
-        feature_j = original_categorical_features[j]
+# Create list of unique pairs
+print(f"Computing {len(original_categorical_features) * (len(original_categorical_features) - 1) // 2} unique pairwise interactions in parallel...")
+pair_tasks = [
+    (i, original_categorical_features[i], j, original_categorical_features[j])
+    for i in range(len(original_categorical_features))
+    for j in range(i + 1, len(original_categorical_features))
+]
 
-        # Get indices for feature_i and feature_j
-        indices_i = [
-            feature_names.tolist().index(col) 
-            for col in feature_mapping[feature_i] 
-            if col in feature_names.tolist()
-        ]
-        indices_j = [
-            feature_names.tolist().index(col) 
-            for col in feature_mapping[feature_j] 
-            if col in feature_names.tolist()
-        ]
+# Parallelize the computation
+interaction_results = Parallel(n_jobs=-1, verbose=1)(
+    delayed(compute_pairwise_interaction)(
+        i, feature_i, j, feature_j, interaction_values, feature_mapping, feature_names
+    )
+    for i, feature_i, j, feature_j in pair_tasks
+)
 
-        if not indices_i or not indices_j:
-            continue
-
-        # Compute interaction value
-        value = np.sum(np.abs(interaction_values[:, indices_i, :][:, :, indices_j]))
-        interaction_results.append(((feature_i, feature_j), value))
+# Filter out None results
+interaction_results = [r for r in interaction_results if r is not None]
 
 # Step 2: Sort the interactions by their absolute value (descending)
 sorted_interactions = sorted(interaction_results, key=lambda x: x[1], reverse=True)
