@@ -50,6 +50,7 @@ from catboost import CatBoostClassifier
 from sklearn.inspection import permutation_importance, PartialDependenceDisplay
 import shap
 import optuna
+from scipy.stats import randint, uniform, loguniform
 
 # %%
 # ================
@@ -62,6 +63,54 @@ SCORING_METRIC = 'roc_auc'
 VERBOSE = 1
 
 CPU_COUNT = os.cpu_count()
+
+# ----------------
+# Hyperparameter tuning preset
+# ----------------
+# "standard" is designed to finish in ~1 hour on a typical workstation/server.
+# You can override via env var: `TUNING_PRESET=fast|standard|max`.
+TUNING_PRESET = os.environ.get("TUNING_PRESET", "standard").strip().lower()
+
+
+def _tuning_iters(preset: str) -> dict:
+    """Centralized tuning budgets per model."""
+    if preset == "fast":
+        return {
+            "lasso": 35,
+            "lasso_interactions_deg2": 25,
+            "lasso_interactions_deg23": 35,
+            "rf": 35,
+            "gbt": 35,
+            "hgbt": 35,
+            "xgb": 35,
+            "catboost": 30,
+        }
+    if preset == "max":
+        return {
+            "lasso": 120,
+            "lasso_interactions_deg2": 80,
+            "lasso_interactions_deg23": 120,
+            "rf": 120,
+            "gbt": 120,
+            "hgbt": 120,
+            "xgb": 120,
+            "catboost": 100,
+        }
+    # default: standard
+    return {
+        "lasso": 60,
+        "lasso_interactions_deg2": 40,
+        "lasso_interactions_deg23": 60,
+        "rf": 60,
+        "gbt": 60,
+        "hgbt": 60,
+        "xgb": 60,
+        "catboost": 60,
+    }
+
+
+_N_ITER = _tuning_iters(TUNING_PRESET)
+logging.info(f"Tuning preset: {TUNING_PRESET} (n_iter={_N_ITER})")
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -179,6 +228,71 @@ def create_preprocessor(categorical_features: list) -> ColumnTransformer:
         remainder='passthrough'
     )
     return preprocessor
+
+
+def infer_feature_types(
+    X: pd.DataFrame,
+    categorical_unique_threshold: int = 20,
+) -> tuple[list, list]:
+    """
+    Infer numeric vs categorical feature lists.
+
+    Many survey datasets encode categorical variables as integers. Treating those as
+    continuous can materially degrade model quality. This heuristic treats:
+      - object/category/bool as categorical
+      - numeric columns with <= threshold unique values as categorical
+      - remaining numeric columns as numeric
+    """
+    numeric_cols: list[str] = []
+    categorical_cols: list[str] = []
+
+    for col in X.columns:
+        s = X[col]
+        if pd.api.types.is_bool_dtype(s) or pd.api.types.is_object_dtype(s) or pd.api.types.is_categorical_dtype(s):
+            categorical_cols.append(col)
+            continue
+        if pd.api.types.is_numeric_dtype(s):
+            nunique = int(s.nunique(dropna=True))
+            if nunique <= categorical_unique_threshold:
+                categorical_cols.append(col)
+            else:
+                numeric_cols.append(col)
+            continue
+        # Fallback: be conservative and treat unknown dtypes as categorical
+        categorical_cols.append(col)
+
+    return numeric_cols, categorical_cols
+
+
+def build_preprocessor(
+    numeric_features: list,
+    categorical_features: list,
+    *,
+    scale_numeric: bool = True,
+) -> ColumnTransformer:
+    """Create a robust preprocessor for mixed numeric/categorical data."""
+    # Keep sparse output compatible with OHE-heavy matrices.
+    numeric_steps = [
+        ("imputer", SimpleImputer(strategy="median")),
+    ]
+    if scale_numeric:
+        numeric_steps.append(("scaler", StandardScaler(with_mean=False)))
+
+    numeric_transformer = Pipeline(steps=numeric_steps)
+    categorical_transformer = Pipeline(
+        steps=[
+            ("imputer", SimpleImputer(strategy="most_frequent")),
+            ("onehot", OneHotEncoder(handle_unknown="ignore")),
+        ]
+    )
+
+    return ColumnTransformer(
+        transformers=[
+            ("num", numeric_transformer, numeric_features),
+            ("cat", categorical_transformer, categorical_features),
+        ],
+        remainder="drop",
+    )
 
 
 def train_evaluate_model(
@@ -494,13 +608,22 @@ logging.info(y_test.value_counts(normalize=True))
 # --- Missing Value Indicators ---
 X_train_with_indicators, X_test_with_indicators = create_missing_indicators(X_train, X_test)
 
-# Treat everything as categorical in this example
-categorical_features = X_train_with_indicators.columns.tolist()
+# Infer feature types (handles numeric-coded categorical variables)
+numeric_features, categorical_features = infer_feature_types(
+    X_train_with_indicators,
+    categorical_unique_threshold=20,
+)
+logging.info(f"Inferred numeric features (n={len(numeric_features)}): {numeric_features}")
+logging.info(f"Inferred categorical features (n={len(categorical_features)}): {categorical_features}")
 
-# Create & Fit Preprocessor
-preprocessor = create_preprocessor(categorical_features)
+# Create a single canonical preprocessor used by all downstream models
+preprocessor = build_preprocessor(
+    numeric_features=numeric_features,
+    categorical_features=categorical_features,
+    scale_numeric=True,  # safe default across linear + tree models
+)
 preprocessor.fit(X_train_with_indicators)
-logging.info("Preprocessor fitted successfully.")
+logging.info("Canonical preprocessor fitted successfully.")
 
 # %%
 # ================
@@ -517,7 +640,7 @@ joblib.dump({
     'y_train': y_train,
     'y_test': y_test,
     'categorical_features': categorical_features,
-    'numeric_features': X_train_with_indicators.select_dtypes(include=['int64', 'float64']).columns.tolist()
+    'numeric_features': numeric_features,
 }, os.path.join(data_save_dir, 'preprocessed_data.joblib'))
 logging.info(f"Preprocessed data saved to {data_save_dir}/preprocessed_data.joblib")
 
@@ -534,6 +657,7 @@ if os.path.exists(data_load_path):
     y_train = loaded_data['y_train']
     y_test = loaded_data['y_test']
     categorical_features = loaded_data['categorical_features']
+    numeric_features = loaded_data.get('numeric_features', [])
     logging.info("Preprocessed data loaded successfully")
 else:
     logging.warning("Preprocessed data file not found - run preprocessing first")
@@ -545,63 +669,44 @@ else:
 # ## Lasso
 
 # %%
-# Define the preprocessing for numeric columns (scale them)
-numeric_features = X_train_with_indicators.select_dtypes(include=['int64', 'float64']).columns
-numeric_transformer = Pipeline(steps=[
-    ('imputer', SimpleImputer(strategy='median')),
-    ('scaler', StandardScaler())])
-
-# Define the preprocessing for categorical features (encode them)
-categorical_features = X_train_with_indicators.select_dtypes(include=['object']).columns
-categorical_transformer = Pipeline(steps=[
-    ('imputer', SimpleImputer(strategy='constant', fill_value='missing')),
-    ('onehot', OneHotEncoder(handle_unknown='ignore'))])
-
-# Combine preprocessing steps
-preprocessor = ColumnTransformer(
-    transformers=[
-        ('num', numeric_transformer, numeric_features),
-        ('cat', categorical_transformer, categorical_features)])
-
-# Create the pipeline
-lasso_pipeline = Pipeline(steps=[('preprocessor', preprocessor),
-                                 ('classifier', LogisticRegression(l1_ratio=1, solver='saga'))])
-# Define an expanded tuning grid.
-# - 'classifier__C': A wide range of regularization strengths.
-# - 'classifier__tol': Different tolerance levels for stopping criteria.
-# - 'classifier__max_iter': More iterations to ensure convergence.
-# - 'preprocessor__cat__drop': Option to drop the first level or keep all levels.
-param_grid = {
-    'classifier__C': [0.0001, 0.001, 0.01, 0.1, 1, 10, 100],
-    'classifier__tol': [1e-4, 1e-3, 1e-2],
-    'classifier__max_iter': [1000, 2000, 5000],
-    # Tune whether to drop the first level for categorical features or not.
-    'preprocessor__cat__onehot__drop': [None, 'first'],
-    # Experiment with class weights (None or 'balanced') to help if classes are imbalanced.
-    'classifier__class_weight': [None, 'balanced']
-}
-
-# Define a cross-validation strategy.
-cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
-
-# Initialize GridSearchCV with your pipeline (lasso_pipeline)
-grid_search = GridSearchCV(
-    estimator=lasso_pipeline,
-    param_grid=param_grid,
-    scoring='roc_auc',
-    cv=cv,
-    n_jobs=-1,
-    verbose=1
+# Canonical pipeline (uses canonical preprocessor built above)
+lasso_pipeline = Pipeline(
+    steps=[
+        ("preprocessor", preprocessor),
+        # NOTE: l1_ratio only applies with penalty='elasticnet'.
+        ("classifier", LogisticRegression(penalty="elasticnet", solver="saga", random_state=RANDOM_STATE)),
+    ]
 )
 
-# Fit the grid search on the training data.
+# Stronger randomized tuning (log-scale for C, continuous l1_ratio)
+cv = RepeatedStratifiedKFold(n_splits=N_SPLITS_CV, n_repeats=1, random_state=RANDOM_STATE)
+lasso_param_dist = {
+    "classifier__C": loguniform(1e-4, 1e2),
+    "classifier__l1_ratio": uniform(0.0, 1.0),
+    "classifier__class_weight": [None, "balanced"],
+    "classifier__max_iter": [3000, 5000, 8000],
+    "classifier__tol": loguniform(1e-4, 1e-2),
+    # encoder choice can materially affect linear model stability
+    "preprocessor__cat__onehot__drop": [None, "first"],
+}
+
+grid_search = RandomizedSearchCV(
+    estimator=lasso_pipeline,
+    param_distributions=lasso_param_dist,
+    n_iter=_N_ITER["lasso"],
+    scoring="roc_auc",
+    cv=cv,
+    n_jobs=-1,
+    verbose=1,
+    random_state=RANDOM_STATE,
+    return_train_score=True,
+)
+
 grid_search.fit(X_train_with_indicators, y_train)
 
-# Display the best parameters and the best ROC AUC achieved during cross-validation.
 print("Best Parameters:", grid_search.best_params_)
-print("Best ROC AUC:", grid_search.best_score_)
+print("Best CV ROC AUC:", grid_search.best_score_)
 
-# Use the best estimator to evaluate performance on the test data.
 best_lasso_model = grid_search.best_estimator_
 train_evaluate_model(
     model=best_lasso_model,
@@ -862,37 +967,41 @@ pipeline = Pipeline([
     ('preprocessor', preprocessor),
     ('poly', PolynomialFeatures(degree=2, interaction_only=True, include_bias=False)),
     ('classifier', LogisticRegression(
-        l1_ratio=1,
+        penalty="elasticnet",
         solver='saga',
         random_state=RANDOM_STATE,
-        max_iter=2000  # Increased default
+        max_iter=5000
     ))
 ])
 
 # ----------------------------
 # 2. Set Up Hyperparameter Tuning
 # ----------------------------
-# Optimized parameter grid to avoid convergence issues
+# Randomized distributions (higher quality than a tiny grid)
 param_grid = {
-    'classifier__C': [0.001, 0.01, 0.1, 1],
-    'classifier__l1_ratio': [1, 0],  # 1 for L1, 0 for L2
-    'classifier__solver': ['saga'],  # saga supports both L1 and L2 penalties
-    'classifier__max_iter': [2000, 5000],  # Increased from [500, 1000]
-    'classifier__tol': [1e-3, 1e-2]  # Removed 1e-4 (too strict)
+    "classifier__C": loguniform(1e-4, 1e2),
+    "classifier__l1_ratio": uniform(0.0, 1.0),
+    "classifier__class_weight": [None, "balanced"],
+    "classifier__tol": loguniform(1e-4, 1e-2),
+    "classifier__max_iter": [5000, 8000],
 }
 
 
 # ----------------------------
 # 3. Create and Fit GridSearchCV
 # ----------------------------
-# We use 5-fold cross-validation and accuracy as the scoring metric.
-grid_search = GridSearchCV(
-    pipeline,
-    param_grid,
-    cv=5,
-    scoring='accuracy',
-    n_jobs=-1,    # Use all available CPU cores.
-    verbose=1
+# Use ROC-AUC (primary objective used across the project)
+cv = RepeatedStratifiedKFold(n_splits=N_SPLITS_CV, n_repeats=1, random_state=RANDOM_STATE)
+grid_search = RandomizedSearchCV(
+    estimator=pipeline,
+    param_distributions=param_grid,
+    n_iter=_N_ITER["lasso_interactions_deg2"],
+    cv=cv,
+    scoring="roc_auc",
+    n_jobs=-1,
+    verbose=1,
+    random_state=RANDOM_STATE,
+    return_train_score=True,
 )
 
 # Fit the grid search on the training data.
@@ -1182,6 +1291,59 @@ def _fit_shap_and_save_plots_for_interaction_lasso(
     shap_imp_df.to_csv(shap_imp_path, index=False)
     print(f"[SHAP] Saved mean(|SHAP|) importances to: {shap_imp_path}")
 
+    # --- custom horizontal bar chart for top 20 features (similar to aggregated interaction features plot) ---
+    top_20_df = shap_imp_df.head(max_display).copy()
+    top_20_df = top_20_df.sort_values("mean_abs_shap", ascending=True)  # Reverse for horizontal bar
+    
+    fig, ax = plt.subplots(figsize=(10, 8))
+    
+    # Create gradient colors from purple (high) to teal (low)
+    colors = plt.cm.viridis(np.linspace(0.2, 0.8, len(top_20_df)))
+    
+    bars = ax.barh(
+        range(len(top_20_df)),
+        top_20_df["mean_abs_shap"].values,
+        color=colors,
+        edgecolor='black',
+        linewidth=0.5
+    )
+    
+    # Format feature names for better display (handle interaction terms)
+    feature_labels = []
+    for feat in top_20_df["feature"].values:
+        # Format interaction features nicely
+        if ' ' in str(feat) or '^' in str(feat):
+            # Handle polynomial feature names like "x0 x1" or "x0^2"
+            feat_str = str(feat).replace(' ', ' × ').replace('^', '^')
+        else:
+            feat_str = str(feat)
+        feature_labels.append(feat_str)
+    
+    ax.set_yticks(range(len(top_20_df)))
+    ax.set_yticklabels(feature_labels, fontsize=9)
+    ax.set_xlabel("Aggregated Importance (Mean |SHAP|)", fontsize=11, fontweight='bold')
+    ax.set_ylabel("Feature Combination", fontsize=11, fontweight='bold')
+    ax.set_title(f"Top {len(top_20_df)} Aggregated Interaction Features", fontsize=13, fontweight='bold', pad=15)
+    
+    # Add value labels on bars
+    for i, (idx, row) in enumerate(top_20_df.iterrows()):
+        ax.text(
+            row["mean_abs_shap"] + max(top_20_df["mean_abs_shap"]) * 0.01,
+            i,
+            f'{row["mean_abs_shap"]:.4f}',
+            va='center',
+            fontsize=8
+        )
+    
+    ax.grid(axis='x', alpha=0.3, linestyle='--')
+    ax.set_xlim(left=0)
+    plt.tight_layout()
+    
+    top20_bar_path = os.path.join(out_dir, f"shap_{tag}_top20_horizontal_bar.png")
+    plt.savefig(top20_bar_path, dpi=300, bbox_inches="tight")
+    plt.show()
+    print(f"[SHAP] Saved top {len(top_20_df)} horizontal bar chart to: {top20_bar_path}")
+
     # --- summary plots ---
     plt.figure()
     shap.summary_plot(
@@ -1270,6 +1432,7 @@ pipeline = Pipeline([
     ('preprocessor', preprocessor),
     ('poly', PolynomialFeatures(degree=3, interaction_only=True, include_bias=False)),
     ('classifier', LogisticRegression(
+        penalty="elasticnet",
         l1_ratio=1.0,          # start at pure L1; tuned below (0=L2, 1=L1)
         solver='saga',
         random_state=RANDOM_STATE,
@@ -1290,10 +1453,10 @@ pipeline = Pipeline([
 # - Optionally compare 2-way vs 3-way interactions (poly degree)
 # - Consider class imbalance via class_weight
 param_grid = {
-    'poly__degree': [2, 3],
-    'classifier__C': np.logspace(-4, 1, 6),          # [1e-4 ... 10]
-    'classifier__l1_ratio': [0.25, 0.5, 0.75, 1.0],  # 1.0 == L1
-    'classifier__class_weight': [None, 'balanced'],
+    "poly__degree": [2, 3],
+    "classifier__C": loguniform(1e-4, 1e1),          # strong prior around typical regularization
+    "classifier__l1_ratio": uniform(0.0, 1.0),
+    "classifier__class_weight": [None, "balanced"],
 }
 
 
@@ -1309,9 +1472,10 @@ _roc_auc_scorer = "roc_auc" if _n_classes == 2 else "roc_auc_ovr"
 _f1_scorer = "f1" if _n_classes == 2 else "f1_weighted"
 scoring = {"roc_auc": _roc_auc_scorer, "f1": _f1_scorer, "accuracy": "accuracy"}
 
-grid_search = GridSearchCV(
-    pipeline,
-    param_grid,
+grid_search = RandomizedSearchCV(
+    estimator=pipeline,
+    param_distributions=param_grid,
+    n_iter=_N_ITER["lasso_interactions_deg23"],
     cv=cv,
     scoring=scoring,
     refit="roc_auc",
@@ -1319,6 +1483,7 @@ grid_search = GridSearchCV(
     # If you hit memory issues, try n_jobs=2 or 4.
     n_jobs=-1,
     verbose=1,
+    random_state=RANDOM_STATE,
     return_train_score=True,
 )
 
@@ -1592,18 +1757,19 @@ logging.info("\n--- Random Forest (Revised) ---")
 # Build pipeline
 rf_pipeline = Pipeline([
     ('preprocessor', preprocessor), 
-    ('classifier', RandomForestClassifier(random_state=RANDOM_STATE))
+    # Avoid nested parallelism: let RandomizedSearchCV parallelize; keep estimator single-threaded.
+    ('classifier', RandomForestClassifier(random_state=RANDOM_STATE, n_jobs=1))
 ])
 
 # Parameter for RandomizedSearch
 rf_param_dist = {
-    'classifier__n_estimators': [100, 200, 500, 1000],
-    'classifier__max_depth': [5, 10, 20, 50],
-    'classifier__min_samples_split': [2, 5, 10, 20],
-    'classifier__min_samples_leaf': [1, 2, 5, 10],
-    'classifier__max_features': ['sqrt', 'log2', 0.3, 0.5, 0.7],  # Mix of float and string
-    'classifier__bootstrap': [True, False],
-    'classifier__class_weight': [None, 'balanced']
+    "classifier__n_estimators": randint(400, 2500),
+    "classifier__max_depth": [None] + list(range(3, 41, 3)),
+    "classifier__min_samples_split": randint(2, 30),
+    "classifier__min_samples_leaf": randint(1, 15),
+    "classifier__max_features": ["sqrt", "log2", 0.4, 0.6, 0.8],
+    "classifier__bootstrap": [True, False],
+    "classifier__class_weight": [None, "balanced", "balanced_subsample"],
 }
 
 try:
@@ -1620,12 +1786,13 @@ try:
     rf_random_search = RandomizedSearchCV(
         estimator=rf_pipeline,
         param_distributions=rf_param_dist,
-        n_iter=30,  # Increase or decrease based on resources
+        n_iter=_N_ITER["rf"],
         cv=cv_rf,
         scoring=SCORING_METRIC,
         n_jobs=-1,  # Use all available cores
         random_state=RANDOM_STATE,
-        verbose=VERBOSE
+        verbose=VERBOSE,
+        return_train_score=True,
     )
     
     # Fit the RandomizedSearchCV
@@ -1945,13 +2112,13 @@ gbc_pipeline = Pipeline([
 
 # Expanded parameter distributions for RandomizedSearch
 gbc_param_dist = {
-    'classifier__n_estimators': [100, 300, 500, 1000],
-    'classifier__learning_rate': [0.01, 0.05, 0.1, 0.2],
-    'classifier__max_depth': [3, 5, 10, 20],
-    'classifier__subsample': [0.8, 0.9, 1.0],  # Controls sample ratio per tree
-    'classifier__min_samples_split': [2, 5, 10],
-    'classifier__min_samples_leaf': [1, 2, 5],
-    'classifier__max_features': ['sqrt', 'log2', None]
+    "classifier__n_estimators": randint(200, 2000),
+    "classifier__learning_rate": loguniform(0.01, 0.2),
+    "classifier__max_depth": randint(2, 6),
+    "classifier__subsample": uniform(0.6, 0.4),  # [0.6, 1.0]
+    "classifier__min_samples_split": randint(2, 30),
+    "classifier__min_samples_leaf": randint(1, 30),
+    "classifier__max_features": ["sqrt", "log2", None],
 }
 
 try:
@@ -1968,12 +2135,13 @@ try:
     gbc_random_search = RandomizedSearchCV(
         estimator=gbc_pipeline,
         param_distributions=gbc_param_dist,
-        n_iter=50,  # Increase or decrease based on resources
+        n_iter=_N_ITER["gbt"],
         cv=cv_gbc,
         scoring=SCORING_METRIC,
         n_jobs=-1,  # Use all available cores
         random_state=RANDOM_STATE,
-        verbose=VERBOSE
+        verbose=VERBOSE,
+        return_train_score=True,
     )
 
     # Fit the RandomizedSearchCV
@@ -2729,19 +2897,25 @@ to_dense = FunctionTransformer(to_dense_func)
 gbc_pipeline = Pipeline([
     ('preprocessor', preprocessor), 
     ('to_dense', to_dense),
-    ('classifier', HistGradientBoostingClassifier(random_state=RANDOM_STATE))
+    ('classifier', HistGradientBoostingClassifier(
+        random_state=RANDOM_STATE,
+        early_stopping=True,
+        validation_fraction=0.1,
+        n_iter_no_change=30,
+    ))
 ])
 
 # Expanded parameter distributions for RandomizedSearch
 # Optimized parameter grid for 24-core/100GB RAM
 param_grid = {
-    'classifier__learning_rate': [0.01, 0.05, 0.1, 0.2],  # Wider range including very low rates
-    'classifier__max_depth': [6, 12, 18],                 # Deeper trees with more variation
-    'classifier__min_samples_leaf': [20, 50, 100],        # More granular leaf sizes
-    'classifier__l2_regularization': [0.0, 0.1, 0.5, 1.0],# Stronger regularization options
-    'classifier__max_bins': [255],                        # Keep max bins for accuracy
-    'classifier__max_leaf_nodes': [64, 128, 256],         # Control tree complexity
-    'classifier__max_iter': [2000],                       # Let early stopping handle actual iterations
+    "classifier__learning_rate": loguniform(0.01, 0.2),
+    "classifier__max_depth": [None, 6, 10, 14, 18],
+    "classifier__min_samples_leaf": randint(20, 200),
+    "classifier__l2_regularization": loguniform(1e-4, 10.0),
+    "classifier__max_bins": [255],
+    "classifier__max_leaf_nodes": randint(31, 257),
+    # Let early stopping pick the effective iteration count; still cap search ranges.
+    "classifier__max_iter": randint(300, 2001),
 }
 
 try:
@@ -2758,12 +2932,13 @@ try:
     gbc_random_search = RandomizedSearchCV(
         estimator=gbc_pipeline,
         param_distributions=param_grid,
-        n_iter=50,  # Increase or decrease based on resources
+        n_iter=_N_ITER["hgbt"],
         cv=cv_gbc,
         scoring=SCORING_METRIC,
         n_jobs=-1,  # Use all available cores
         random_state=RANDOM_STATE,
-        verbose=VERBOSE
+        verbose=VERBOSE,
+        return_train_score=True,
     )
 
     # Fit the RandomizedSearchCV
@@ -3327,30 +3502,15 @@ import numpy as np
 # 1. Expanded Hyperparameter Grid
 # ======================
 param_dist = {
-    # Increase n_estimators up to 1000 (or more)
-    'classifier__n_estimators': [100, 300, 500, 800, 1000],
-    
-    # Smaller learning rates for finer updates
-    'classifier__learning_rate': [0.01, 0.02, 0.03, 0.05, 0.1],
-    
-    # Broader range for max_depth
-    'classifier__max_depth': [3, 5, 7, 9, 12],
-    
-    # Tweak min_child_weight to control complexity
-    'classifier__min_child_weight': [1, 3, 5, 7, 10],
-    
-    # Keep or enlarge subsample
-    'classifier__subsample': [0.6, 0.7, 0.8, 0.9, 1.0],
-    
-    # Potentially try colsample_bytree > 1.0 (uncommon, but possible)
-    'classifier__colsample_bytree': [0.6, 0.8, 1.0, 1.2],
-    
-    # Adjust gamma (larger => more conservative splits)
-    'classifier__gamma': [0, 0.1, 0.3, 0.6, 1.0],
-    
-    # Expand regularization range
-    'classifier__reg_alpha': [0, 0.1, 0.2, 0.5, 1.0, 2.0],
-    'classifier__reg_lambda': [0.5, 1.0, 1.5, 2.0, 3.0, 4.0]
+    "classifier__n_estimators": randint(400, 2500),
+    "classifier__learning_rate": loguniform(0.01, 0.2),
+    "classifier__max_depth": randint(3, 11),
+    "classifier__min_child_weight": randint(1, 12),
+    "classifier__subsample": uniform(0.6, 0.4),         # [0.6, 1.0]
+    "classifier__colsample_bytree": uniform(0.6, 0.4),  # [0.6, 1.0] (must be <= 1.0)
+    "classifier__gamma": loguniform(1e-8, 1.0),
+    "classifier__reg_alpha": loguniform(1e-8, 10.0),
+    "classifier__reg_lambda": loguniform(0.1, 10.0),
 }
 
 # ============================
@@ -3382,8 +3542,11 @@ feature_eng_transformer = FunctionTransformer(feature_engineering, validate=Fals
 #   - Constants: RANDOM_STATE, SCORING_METRIC, N_SPLITS_CV
 
 xgb_clf = xgb.XGBClassifier(
-    eval_metric='logloss',
-    random_state=RANDOM_STATE
+    objective="binary:logistic",
+    eval_metric="auc",
+    tree_method="hist",
+    n_jobs=1,  # avoid nested parallelism (CV/search handles parallelism)
+    random_state=RANDOM_STATE,
 )
 
 # Here we insert a feature engineering step *before* the preprocessor:
@@ -3417,12 +3580,13 @@ cv = StratifiedKFold(n_splits=N_SPLITS_CV, shuffle=True, random_state=RANDOM_STA
 random_search = RandomizedSearchCV(
     estimator=xgb_pipeline,
     param_distributions=param_dist,
-    n_iter=50,  # Increase if you have time/resources
+    n_iter=_N_ITER["xgb"],
     cv=cv,
     scoring=SCORING_METRIC,
     n_jobs=-1,
     verbose=1,
-    random_state=RANDOM_STATE
+    random_state=RANDOM_STATE,
+    return_train_score=True,
 )
 
 logging.info("Starting RandomizedSearchCV for expanded XGBoost grid...")
@@ -4128,38 +4292,39 @@ from scipy.stats import uniform, randint
 pipeline = Pipeline(steps=[
     ('preprocessor', preprocessor),
     ('classifier', CatBoostClassifier(
-        iterations= 500,  # Increase the number of iterations if needed
-        learning_rate=0.1,
-        depth=6,
-        loss_function='Logloss',
+        loss_function="Logloss",
+        eval_metric="AUC",
         verbose=0,
-        random_seed=RANDOM_STATE
+        random_seed=RANDOM_STATE,
+        thread_count=1,  # avoid nested parallelism (CV/search handles parallelism)
     ))
 ])
 
 # Define the parameter distribution for RandomizedSearchCV
 param_dist = {
-    'classifier__iterations': randint(1000, 5000),  # Wider range for iterations
-    'classifier__learning_rate': uniform(0.01, 0.3),  # Wider range for learning rate
-    'classifier__depth': randint(4, 12),  # Wider range for depth
-    'classifier__l2_leaf_reg': uniform(1e-2, 10),  # L2 regularization
-    'classifier__border_count': randint(32, 255),  # Border count
-    'classifier__bagging_temperature': uniform(0, 1),  # Bagging temperature
-    'classifier__random_strength': uniform(1e-9, 10),  # Random strength
-    'classifier__od_type': ['IncToDec', 'Iter'],  # Overfitting detector type
-    'classifier__od_wait': randint(10, 50)  # Overfitting detector wait
+    "classifier__iterations": randint(500, 4000),
+    "classifier__learning_rate": loguniform(1e-3, 0.3),
+    "classifier__depth": randint(4, 11),
+    "classifier__l2_leaf_reg": loguniform(1.0, 50.0),
+    "classifier__border_count": randint(32, 255),
+    "classifier__bagging_temperature": uniform(0.0, 1.0),
+    "classifier__random_strength": loguniform(1e-8, 10.0),
+    "classifier__auto_class_weights": [None, "Balanced"],
+    "classifier__od_type": ["IncToDec", "Iter"],
+    "classifier__od_wait": randint(10, 80),
 }
 
 # Perform RandomizedSearchCV for hyperparameter tuning
 random_search = RandomizedSearchCV(
     estimator=pipeline,
     param_distributions=param_dist,
-    n_iter=20,  # Increase the number of parameter settings sampled if needed
-    cv=StratifiedKFold(n_splits=3, shuffle=True, random_state=RANDOM_STATE),
+    n_iter=_N_ITER["catboost"],
+    cv=StratifiedKFold(n_splits=N_SPLITS_CV, shuffle=True, random_state=RANDOM_STATE),
     scoring=SCORING_METRIC,
-    n_jobs=CPU_COUNT,
+    n_jobs=-1,
     verbose=VERBOSE,
-    random_state=RANDOM_STATE
+    random_state=RANDOM_STATE,
+    return_train_score=True,
 )
 
 random_search.fit(X_train_with_indicators, y_train)
