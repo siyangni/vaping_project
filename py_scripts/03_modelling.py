@@ -503,6 +503,42 @@ preprocessor.fit(X_train_with_indicators)
 logging.info("Preprocessor fitted successfully.")
 
 # %%
+# ================
+# SAVE PREPROCESSED DATA
+# ================
+# Save all training/test data and preprocessor for use without rerunning preprocessing
+data_save_dir = os.path.expanduser('~/work/vaping_project_data')
+os.makedirs(data_save_dir, exist_ok=True)
+
+# Save train/test splits
+joblib.dump({
+    'X_train_with_indicators': X_train_with_indicators,
+    'X_test_with_indicators': X_test_with_indicators,
+    'y_train': y_train,
+    'y_test': y_test,
+    'categorical_features': categorical_features,
+    'numeric_features': X_train_with_indicators.select_dtypes(include=['int64', 'float64']).columns.tolist()
+}, os.path.join(data_save_dir, 'preprocessed_data.joblib'))
+logging.info(f"Preprocessed data saved to {data_save_dir}/preprocessed_data.joblib")
+
+# %%
+# ================
+# LOAD PREPROCESSED DATA (for analysis without retraining)
+# ================
+# Uncomment and run this cell to load preprocessed data instead of rerunning preprocessing
+data_load_path = os.path.expanduser('~/work/vaping_project_data/preprocessed_data.joblib')
+if os.path.exists(data_load_path):
+    loaded_data = joblib.load(data_load_path)
+    X_train_with_indicators = loaded_data['X_train_with_indicators']
+    X_test_with_indicators = loaded_data['X_test_with_indicators']
+    y_train = loaded_data['y_train']
+    y_test = loaded_data['y_test']
+    categorical_features = loaded_data['categorical_features']
+    logging.info("Preprocessed data loaded successfully")
+else:
+    logging.warning("Preprocessed data file not found - run preprocessing first")
+
+# %%
 # # Model Training
 
 # %%
@@ -577,10 +613,21 @@ train_evaluate_model(
 )
 
 # %%
+# Save the Lasso model
+lasso_model_filename = os.path.expanduser('~/work/vaping_project_data/best_lasso_model.joblib')
+joblib.dump(best_lasso_model, lasso_model_filename)
+logging.info(f"Lasso model saved to {lasso_model_filename}")
+
+# %%
+# Load the Lasso model (for analysis without retraining)
+lasso_model_filename = os.path.expanduser('~/work/vaping_project_data/best_lasso_model.joblib')
+best_lasso_model = joblib.load(lasso_model_filename)
+logging.info("Lasso model loaded successfully")
+
+# %%
 import numpy as np
 import pandas as pd
 
-# Assume 'best_lasso_model' is your already fitted pipeline from GridSearchCV.
 # Extract the logistic regression model from the pipeline.
 lr = best_lasso_model.named_steps['classifier']
 
@@ -859,9 +906,23 @@ print("Best cross-validation accuracy: {:.4f}".format(grid_search.best_score_))
 
 # Use the best model to predict on the test set.
 best_model = grid_search.best_estimator_
+best_model_2way_interactions = best_model
 y_pred = best_model.predict(X_test_with_indicators)
 test_accuracy = accuracy_score(y_test, y_pred)
 print("Test set accuracy: {:.4f}".format(test_accuracy))
+
+# %%
+# Save the 2-way interaction Lasso model
+lasso_2way_model_filename = os.path.expanduser('~/work/vaping_project_data/best_lasso_2way_model.joblib')
+joblib.dump(best_model_2way_interactions, lasso_2way_model_filename)
+logging.info(f"Lasso 2-way interaction model saved to {lasso_2way_model_filename}")
+
+# %%
+# Load the 2-way interaction Lasso model (for analysis without retraining)
+lasso_2way_model_filename = os.path.expanduser('~/work/vaping_project_data/best_lasso_2way_model.joblib')
+best_model_2way_interactions = joblib.load(lasso_2way_model_filename)
+best_model = best_model_2way_interactions  # For compatibility with analysis code below
+logging.info("Lasso 2-way interaction model loaded successfully")
 
 # %%
 import numpy as np
@@ -1017,6 +1078,166 @@ plt.tight_layout()
 plt.show()
 
 # %%
+#############################################
+# SHAP (2-way interaction Lasso / degree=2)
+#############################################
+import os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import shap
+
+from sklearn.base import clone
+
+
+def _get_poly_feature_names_from_pipeline(pipe: Pipeline):
+    """Returns feature names after preprocessor + PolynomialFeatures."""
+    pre = pipe.named_steps["preprocessor"]
+    poly = pipe.named_steps["poly"]
+    base_names = pre.get_feature_names_out()
+    return poly.get_feature_names_out(base_names)
+
+
+def _transform_to_poly_matrix(pipe: Pipeline, X):
+    """Transforms raw X -> preprocessor -> poly feature matrix."""
+    pre = pipe.named_steps["preprocessor"]
+    poly = pipe.named_steps["poly"]
+    X_pre = pre.transform(X)
+    X_poly = poly.transform(X_pre)
+    return X_poly
+
+
+def _fit_shap_and_save_plots_for_interaction_lasso(
+    pipe: Pipeline,
+    X_train,
+    out_dir: str,
+    tag: str,
+    sample_size: int = 2000,
+    background_size: int = 200,
+    max_features: int = 400,
+    random_state: int = 42,
+    max_display: int = 20,
+):
+    """
+    Computes SHAP for the interaction Lasso pipeline (preprocessor + poly + LogisticRegression),
+    and saves:
+      - SHAP beeswarm summary plot
+      - SHAP bar summary plot
+      - top-N dependence plots
+      - CSV of mean(|SHAP|) feature importance
+    """
+    os.makedirs(out_dir, exist_ok=True)
+
+    clf = pipe.named_steps["classifier"]
+    poly_feature_names = np.asarray(_get_poly_feature_names_from_pipeline(pipe))
+    X_poly = _transform_to_poly_matrix(pipe, X_train)
+
+    # --- sample rows for compute / plots ---
+    rng = np.random.default_rng(random_state)
+    n_rows = X_poly.shape[0]
+    if n_rows == 0:
+        raise ValueError("Empty training data passed to SHAP computation.")
+
+    sample_idx = rng.choice(n_rows, size=min(sample_size, n_rows), replace=False)
+    bg_idx = rng.choice(n_rows, size=min(background_size, n_rows), replace=False)
+    X_sample = X_poly[sample_idx]
+    X_bg = X_poly[bg_idx]
+
+    # --- restrict columns to keep memory reasonable (favor non-zero / largest coefficients) ---
+    coef = clf.coef_[0]
+    intercept = float(clf.intercept_[0]) if hasattr(clf, "intercept_") and len(clf.intercept_) else 0.0
+
+    nonzero = np.flatnonzero(coef)
+    selected = nonzero if nonzero.size > 0 else np.arange(coef.shape[0])
+    if selected.size > max_features:
+        top = np.argsort(np.abs(coef[selected]))[::-1][:max_features]
+        selected = selected[top]
+    selected = np.sort(selected)
+
+    X_sample_sel = X_sample[:, selected]
+    X_bg_sel = X_bg[:, selected]
+    feature_names_sel = poly_feature_names[selected]
+
+    # --- build a tiny "reduced" linear model so SHAP matches the selected columns ---
+    class _ReducedLinearModel:
+        def __init__(self, coef_1d: np.ndarray, intercept_0: float):
+            self.coef_ = np.asarray(coef_1d, dtype=float).reshape(1, -1)
+            self.intercept_ = np.asarray([intercept_0], dtype=float)
+
+    reduced_model = _ReducedLinearModel(coef[selected], intercept)
+
+    explainer = shap.LinearExplainer(reduced_model, X_bg_sel)
+    shap_values = explainer.shap_values(X_sample_sel)
+    if isinstance(shap_values, list):
+        shap_values = shap_values[1] if len(shap_values) > 1 else shap_values[0]
+
+    # --- export mean(|SHAP|) importance ---
+    mean_abs_shap = np.mean(np.abs(shap_values), axis=0)
+    shap_imp_df = (
+        pd.DataFrame({"feature": feature_names_sel, "mean_abs_shap": mean_abs_shap})
+        .sort_values("mean_abs_shap", ascending=False)
+        .reset_index(drop=True)
+    )
+    shap_imp_path = os.path.join(out_dir, f"shap_{tag}_importance.csv")
+    shap_imp_df.to_csv(shap_imp_path, index=False)
+    print(f"[SHAP] Saved mean(|SHAP|) importances to: {shap_imp_path}")
+
+    # --- summary plots ---
+    plt.figure()
+    shap.summary_plot(
+        shap_values,
+        X_sample_sel,
+        feature_names=feature_names_sel,
+        max_display=max_display,
+        show=False,
+    )
+    beeswarm_path = os.path.join(out_dir, f"shap_{tag}_summary_beeswarm.png")
+    plt.savefig(beeswarm_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    print(f"[SHAP] Saved beeswarm summary plot to: {beeswarm_path}")
+
+    plt.figure()
+    shap.summary_plot(
+        shap_values,
+        X_sample_sel,
+        feature_names=feature_names_sel,
+        plot_type="bar",
+        max_display=max_display,
+        show=False,
+    )
+    bar_path = os.path.join(out_dir, f"shap_{tag}_summary_bar.png")
+    plt.savefig(bar_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    print(f"[SHAP] Saved bar summary plot to: {bar_path}")
+
+    # --- dependence plots for the top-k features ---
+    top_k = min(5, shap_imp_df.shape[0])
+    for rank in range(top_k):
+        feat = shap_imp_df.loc[rank, "feature"]
+        feat_idx = int(np.where(feature_names_sel == feat)[0][0])
+        plt.figure()
+        shap.dependence_plot(
+            feat_idx,
+            shap_values,
+            X_sample_sel,
+            feature_names=feature_names_sel,
+            show=False,
+        )
+        dep_path = os.path.join(out_dir, f"shap_{tag}_dependence_top{rank+1}.png")
+        plt.savefig(dep_path, dpi=300, bbox_inches="tight")
+        plt.close()
+        print(f"[SHAP] Saved dependence plot to: {dep_path}")
+
+
+_SHAP_OUT_DIR = os.path.expanduser("~/work/vaping_project_data/shap_lasso_interactions")
+_fit_shap_and_save_plots_for_interaction_lasso(
+    pipe=best_model_2way_interactions,
+    X_train=X_train_with_indicators,
+    out_dir=_SHAP_OUT_DIR,
+    tag="lasso_interactions_degree2",
+)
+
+# %%
 # Three-way Interaction Model
 import numpy as np
 from sklearn.pipeline import Pipeline
@@ -1112,6 +1333,7 @@ print("Best cross-validation ROC AUC: {:.4f}".format(grid_search.best_score_))
 
 # Use the best model to predict on the test set.
 best_model = grid_search.best_estimator_
+best_model_interactions_grid = best_model
 y_pred = best_model.predict(X_test_with_indicators)
 test_accuracy = accuracy_score(y_test, y_pred)
 print("Test set accuracy: {:.4f}".format(test_accuracy))
@@ -1132,6 +1354,73 @@ if _n_classes == 2:
     print("Test set F1 score: {:.4f}".format(f1_score(y_test, y_pred)))
 else:
     print("Test set F1 score (weighted): {:.4f}".format(f1_score(y_test, y_pred, average="weighted")))
+
+# %%
+# Save the interaction grid search model (best model from degree 2/3 grid search)
+lasso_interactions_grid_filename = os.path.expanduser('~/work/vaping_project_data/best_lasso_interactions_grid_model.joblib')
+joblib.dump(best_model_interactions_grid, lasso_interactions_grid_filename)
+logging.info(f"Lasso interactions grid model saved to {lasso_interactions_grid_filename}")
+
+# %%
+# Load the interaction grid search model (for analysis without retraining)
+lasso_interactions_grid_filename = os.path.expanduser('~/work/vaping_project_data/best_lasso_interactions_grid_model.joblib')
+best_model_interactions_grid = joblib.load(lasso_interactions_grid_filename)
+best_model = best_model_interactions_grid  # For compatibility with analysis code below
+logging.info("Lasso interactions grid model loaded successfully")
+
+# %%
+###########################################################
+# Build a dedicated 3-way interaction Lasso model (degree=3)
+###########################################################
+import pandas as pd
+from sklearn.base import clone
+
+best_model_3way_interactions = None
+try:
+    cv_results = pd.DataFrame(grid_search.cv_results_)
+    score_col = "mean_test_roc_auc" if "mean_test_roc_auc" in cv_results.columns else "mean_test_score"
+    deg3 = cv_results[cv_results["param_poly__degree"] == 3]
+    if deg3.shape[0] == 0:
+        print("[3-way Lasso] No degree=3 rows found in GridSearchCV results; skipping 3-way SHAP.")
+    else:
+        best_row = deg3.sort_values(score_col, ascending=False).iloc[0]
+        best_params_deg3 = {
+            c.replace("param_", ""): best_row[c]
+            for c in cv_results.columns
+            if c.startswith("param_")
+        }
+        best_model_3way_interactions = clone(grid_search.estimator)
+        best_model_3way_interactions.set_params(**best_params_deg3)
+        best_model_3way_interactions.fit(X_train_with_indicators, y_train)
+        print("[3-way Lasso] Fitted best degree=3 model using CV-selected hyperparameters.")
+
+        # Save the 3-way interaction Lasso model
+        lasso_3way_model_filename = os.path.expanduser('~/work/vaping_project_data/best_lasso_3way_model.joblib')
+        joblib.dump(best_model_3way_interactions, lasso_3way_model_filename)
+        logging.info(f"Lasso 3-way interaction model saved to {lasso_3way_model_filename}")
+except Exception as e:
+    print(f"[3-way Lasso] Failed to build degree=3 model from CV results: {e}")
+
+# %%
+# Load the 3-way interaction Lasso model (for analysis without retraining)
+lasso_3way_model_filename = os.path.expanduser('~/work/vaping_project_data/best_lasso_3way_model.joblib')
+if os.path.exists(lasso_3way_model_filename):
+    best_model_3way_interactions = joblib.load(lasso_3way_model_filename)
+    logging.info("Lasso 3-way interaction model loaded successfully")
+else:
+    logging.warning("Lasso 3-way interaction model file not found - model may need to be trained first")
+
+# %%
+#############################################
+# SHAP (3-way interaction Lasso / degree=3)
+#############################################
+if best_model_3way_interactions is not None:
+    _fit_shap_and_save_plots_for_interaction_lasso(
+        pipe=best_model_3way_interactions,
+        X_train=X_train_with_indicators,
+        out_dir=_SHAP_OUT_DIR,
+        tag="lasso_interactions_degree3",
+    )
 
 # %%
 import numpy as np
