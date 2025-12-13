@@ -199,25 +199,25 @@ merged_df = pd.concat(filtered_dataframes.values(), ignore_index=True)
 
 # Display basic info of the merged dataframe
 # Get dataset shape
-print(f"\nDataset Shape: {df.shape}")
+print(f"\nDataset Shape: {merged_df.shape}")
     
 # Get column names
-print(f"\nColumn Names: {df.columns.tolist()}")
+print(f"\nColumn Names: {merged_df.columns.tolist()}")
     
 # Get data types
-print(f"\nData Types:\n{df.dtypes}")
+print(f"\nData Types:\n{merged_df.dtypes}")
     
 # Check for missing values
-print(f"\nMissing Values:\n{df.isnull().sum()}")
+print(f"\nMissing Values:\n{merged_df.isnull().sum()}")
     
 # Get summary statistics for numerical columns
-print(f"\nSummary Statistics:\n{df.describe(include='all')}")
+print(f"\nSummary Statistics:\n{merged_df.describe(include='all')}")
     
 # Count unique values in each column
-print(f"\nUnique Values per Column:\n{df.nunique()}")
+print(f"\nUnique Values per Column:\n{merged_df.nunique()}")
     
 # Check for duplicate rows
-print(f"\nNumber of Duplicate Rows: {df.duplicated().sum()}")
+print(f"\nNumber of Duplicate Rows: {merged_df.duplicated().sum()}")
     
 # Print a separator for readability
 print("\n" + "=" * 50 + "\n")
