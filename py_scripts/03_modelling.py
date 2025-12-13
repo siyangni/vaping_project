@@ -818,21 +818,20 @@ pipeline = Pipeline([
         l1_ratio=1,
         solver='saga',
         random_state=RANDOM_STATE,
-        max_iter=1000
+        max_iter=2000  # Increased default
     ))
 ])
 
 # ----------------------------
 # 2. Set Up Hyperparameter Tuning
 # ----------------------------
-# Here we define a parameter grid for tuning.
-# In this example, we tune the inverse regularization strength 'C' for logistic regression.
+# Optimized parameter grid to avoid convergence issues
 param_grid = {
     'classifier__C': [0.001, 0.01, 0.1, 1],
     'classifier__l1_ratio': [1, 0],  # 1 for L1, 0 for L2
     'classifier__solver': ['saga'],  # saga supports both L1 and L2 penalties
-    'classifier__max_iter': [500, 1000],
-    'classifier__tol': [1e-4, 1e-3, 1e-2]
+    'classifier__max_iter': [2000, 5000],  # Increased from [500, 1000]
+    'classifier__tol': [1e-3, 1e-2]  # Removed 1e-4 (too strict)
 }
 
 
@@ -1018,59 +1017,88 @@ plt.tight_layout()
 plt.show()
 
 # %%
+# Three-way Interaction Model
 import numpy as np
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import GridSearchCV
-from sklearn.metrics import accuracy_score
+from sklearn.model_selection import GridSearchCV, StratifiedKFold
+from sklearn.metrics import accuracy_score, roc_auc_score, f1_score
+from joblib import Memory
+import os
 
 # Set a random state for reproducibility.
 RANDOM_STATE = 42
+
+# Cache expensive pipeline transforms (preprocessing + polynomial expansion) across CV folds
+# and hyperparameter settings. This is one of the highest-impact speedups for GridSearchCV.
+_sklearn_cache_dir = os.path.join(os.getcwd(), ".sklearn_cache")
+memory = Memory(location=_sklearn_cache_dir, verbose=0)
 
 # ----------------------------
 # 1. Build the Pipeline
 # ----------------------------
 # This pipeline consists of:
 #  - preprocessor: your existing preprocessor for data cleaning/encoding.
-#  - poly: PolynomialFeatures with degree 2 (pairwise interactions only, no bias).
-#  - classifier: LogisticRegression with L1 penalty (sparse model) using the saga solver.
+#  - poly: PolynomialFeatures with degree 2/3 (pairwise or 3-way interactions, no bias).
+#  - classifier: LogisticRegression using the saga solver, where regularization is
+#    controlled via (C, l1_ratio). In scikit-learn >= 1.8, the `penalty` parameter
+#    is deprecated; use l1_ratio=0 for L2, l1_ratio=1 for L1, and intermediate values
+#    for elastic-net.
 pipeline = Pipeline([
     ('preprocessor', preprocessor),
     ('poly', PolynomialFeatures(degree=3, interaction_only=True, include_bias=False)),
     ('classifier', LogisticRegression(
-        l1_ratio=1,
+        l1_ratio=1.0,          # start at pure L1; tuned below (0=L2, 1=L1)
         solver='saga',
         random_state=RANDOM_STATE,
-        max_iter=500
+        # Keep these fixed: once converged, they typically do not change "quality",
+        # but searching them multiplies runtime.
+        max_iter=5000,
+        tol=1e-3
+        # n_jobs parameter removed: deprecated in sklearn 1.8+ (has no effect)
     ))
-])
+], memory=memory)
 
 # ----------------------------
 # 2. Set Up Hyperparameter Tuning
 # ----------------------------
-# Here we define a parameter grid for tuning.
-# In this example, we tune the inverse regularization strength 'C' for logistic regression.
+# Refined grid:
+# - Tune regularization strength on a log-scale (C)
+# - Tune L1 vs ElasticNet mix (l1_ratio)
+# - Optionally compare 2-way vs 3-way interactions (poly degree)
+# - Consider class imbalance via class_weight
 param_grid = {
-    'classifier__C': [0.01, 0.1, 1],
-    'classifier__l1_ratio': [1],  # 1 for L1 penalty
-    'classifier__solver': ['saga'],  # saga supports L1 penalty
-    'classifier__max_iter': [500, 1000],
-    'classifier__tol': [1e-4]
+    'poly__degree': [2, 3],
+    'classifier__C': np.logspace(-4, 1, 6),          # [1e-4 ... 10]
+    'classifier__l1_ratio': [0.25, 0.5, 0.75, 1.0],  # 1.0 == L1
+    'classifier__class_weight': [None, 'balanced'],
 }
 
 
 # ----------------------------
 # 3. Create and Fit GridSearchCV
 # ----------------------------
-# We use 5-fold cross-validation and accuracy as the scoring metric.
+# Use stratified CV (safer for imbalanced classes).
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
+
+# Use ROC-AUC as the main refit metric (matches the earlier tuning blocks).
+_n_classes = len(np.unique(y_train))
+_roc_auc_scorer = "roc_auc" if _n_classes == 2 else "roc_auc_ovr"
+_f1_scorer = "f1" if _n_classes == 2 else "f1_weighted"
+scoring = {"roc_auc": _roc_auc_scorer, "f1": _f1_scorer, "accuracy": "accuracy"}
+
 grid_search = GridSearchCV(
     pipeline,
     param_grid,
-    cv=3,
-    scoring='accuracy',
-    n_jobs=3,    # need to adjust accordingly to prevent memory overflow.
-    verbose=1
+    cv=cv,
+    scoring=scoring,
+    refit="roc_auc",
+    # Using all cores can be fast but can also blow RAM with interaction features.
+    # If you hit memory issues, try n_jobs=2 or 4.
+    n_jobs=-1,
+    verbose=1,
+    return_train_score=True,
 )
 
 # Fit the grid search on the training data.
@@ -1080,13 +1108,30 @@ grid_search.fit(X_train_with_indicators, y_train)
 # 4. Evaluate the Best Model
 # ----------------------------
 print("Best hyperparameters:", grid_search.best_params_)
-print("Best cross-validation accuracy: {:.4f}".format(grid_search.best_score_))
+print("Best cross-validation ROC AUC: {:.4f}".format(grid_search.best_score_))
 
 # Use the best model to predict on the test set.
 best_model = grid_search.best_estimator_
 y_pred = best_model.predict(X_test_with_indicators)
 test_accuracy = accuracy_score(y_test, y_pred)
 print("Test set accuracy: {:.4f}".format(test_accuracy))
+
+# Optional: also report ROC-AUC / F1 on the test set (handles binary + multiclass).
+if hasattr(best_model, "predict_proba"):
+    y_pred_proba = best_model.predict_proba(X_test_with_indicators)
+    if _n_classes == 2:
+        print("Test set ROC AUC: {:.4f}".format(roc_auc_score(y_test, y_pred_proba[:, 1])))
+    else:
+        print(
+            "Test set ROC AUC (OvR): {:.4f}".format(
+                roc_auc_score(y_test, y_pred_proba, multi_class="ovr", average="weighted")
+            )
+        )
+
+if _n_classes == 2:
+    print("Test set F1 score: {:.4f}".format(f1_score(y_test, y_pred)))
+else:
+    print("Test set F1 score (weighted): {:.4f}".format(f1_score(y_test, y_pred, average="weighted")))
 
 # %%
 import numpy as np
