@@ -19,7 +19,7 @@ from pathlib import Path
 # ================
 
 # Input data path - can be overridden via VAPING_DATA_PATH environment variable
-DEFAULT_DATA_PATH = os.path.expanduser('~/autodl-tmp/processed_data_g12nn.csv')
+DEFAULT_DATA_PATH = os.path.expanduser('~/work/vaping_project_data/processed_data_g12nn.csv')
 DATA_PATH = os.environ.get('VAPING_DATA_PATH', DEFAULT_DATA_PATH)
 
 # Model artifacts directory - can be overridden via VAPING_MODELS_DIR environment variable
