@@ -32,7 +32,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ML imports
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression, LogisticRegressionCV
@@ -169,7 +169,8 @@ X_train_theory = X_train_scaled[:, theory_indices]
 X_test_theory = X_test_scaled[:, theory_indices]
 
 # Fit logistic regression
-lr_theory = LogisticRegression(penalty='l2', C=1.0, random_state=RANDOM_STATE, max_iter=1000)
+# scikit-learn >= 1.8: `penalty` is deprecated; default is L2 regularization.
+lr_theory = LogisticRegression(C=1.0, random_state=RANDOM_STATE, max_iter=1000)
 lr_theory.fit(X_train_theory, y_train)
 
 y_pred_theory = lr_theory.predict_proba(X_test_theory)[:, 1]
@@ -206,15 +207,25 @@ print("="*70)
 print(" BASELINE 2: Lasso-Only Feature Selection")
 print("="*70)
 
-# Fit Lasso with cross-validation
+# Fit Lasso with cross-validation (manual CV so we don't rely on deprecated `penalty`)
 print("\nFitting Lasso with cross-validation...")
-lasso_cv = LogisticRegressionCV(penalty='l1', solver='liblinear', cv=5,
-                                 Cs=[0.001, 0.01, 0.1, 1, 10],
-                                 random_state=RANDOM_STATE, max_iter=1000,
-                                 scoring='roc_auc')
-lasso_cv.fit(X_train_scaled, y_train)
+lasso_base = LogisticRegression(
+    solver='saga',
+    l1_ratio=1.0,  # L1 (lasso)
+    random_state=RANDOM_STATE,
+    max_iter=1000
+)
+lasso_grid = GridSearchCV(
+    estimator=lasso_base,
+    param_grid={"C": [0.001, 0.01, 0.1, 1, 10]},
+    cv=5,
+    scoring='roc_auc',
+    n_jobs=-1
+)
+lasso_grid.fit(X_train_scaled, y_train)
+lasso_cv = lasso_grid.best_estimator_
 
-print(f"Best C: {lasso_cv.C_[0]:.4f}")
+print(f"Best C: {lasso_grid.best_params_['C']:.4f}")
 
 # Get selected features (non-zero coefficients)
 lasso_coefs = lasso_cv.coef_[0]
@@ -232,7 +243,8 @@ print(f"Top 10: {lasso_features[:10]}")
 X_train_lasso = X_train_scaled[:, lasso_features_idx]
 X_test_lasso = X_test_scaled[:, lasso_features_idx]
 
-lr_lasso = LogisticRegression(penalty='l2', C=1.0, random_state=RANDOM_STATE, max_iter=1000)
+# scikit-learn >= 1.8: `penalty` is deprecated; default is L2 regularization.
+lr_lasso = LogisticRegression(C=1.0, random_state=RANDOM_STATE, max_iter=1000)
 lr_lasso.fit(X_train_lasso, y_train)
 
 y_pred_lasso = lr_lasso.predict_proba(X_test_lasso)[:, 1]
@@ -291,7 +303,8 @@ print(f"Top 10: {xgb_features[:10]}")
 X_train_xgb = X_train_scaled[:, xgb_features_idx]
 X_test_xgb = X_test_scaled[:, xgb_features_idx]
 
-lr_xgb = LogisticRegression(penalty='l2', C=1.0, random_state=RANDOM_STATE, max_iter=1000)
+# scikit-learn >= 1.8: `penalty` is deprecated; default is L2 regularization.
+lr_xgb = LogisticRegression(C=1.0, random_state=RANDOM_STATE, max_iter=1000)
 lr_xgb.fit(X_train_xgb, y_train)
 
 y_pred_xgb = lr_xgb.predict_proba(X_test_xgb)[:, 1]
@@ -331,7 +344,8 @@ print(f"\nUsing all {X_train_scaled.shape[1]} features...")
 print("NOTE: This often leads to overfitting and instability")
 
 # Try to fit with L2 regularization (otherwise may not converge)
-lr_kitchen = LogisticRegression(penalty='l2', C=0.01, random_state=RANDOM_STATE,
+# scikit-learn >= 1.8: `penalty` is deprecated; default is L2 regularization.
+lr_kitchen = LogisticRegression(C=0.01, random_state=RANDOM_STATE,
                                 max_iter=2000, solver='lbfgs')
 
 try:
@@ -421,7 +435,8 @@ X_train_consensus = X_train_scaled[:, consensus_indices]
 X_test_consensus = X_test_scaled[:, consensus_indices]
 
 # Fit logistic regression
-lr_consensus = LogisticRegression(penalty='l2', C=1.0, random_state=RANDOM_STATE, max_iter=1000)
+# scikit-learn >= 1.8: `penalty` is deprecated; default is L2 regularization.
+lr_consensus = LogisticRegression(C=1.0, random_state=RANDOM_STATE, max_iter=1000)
 lr_consensus.fit(X_train_consensus, y_train)
 
 y_pred_consensus = lr_consensus.predict_proba(X_test_consensus)[:, 1]

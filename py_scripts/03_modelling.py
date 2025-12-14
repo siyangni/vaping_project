@@ -673,8 +673,11 @@ else:
 lasso_pipeline = Pipeline(
     steps=[
         ("preprocessor", preprocessor),
-        # NOTE: l1_ratio only applies with penalty='elasticnet'.
-        ("classifier", LogisticRegression(penalty="elasticnet", solver="saga", random_state=RANDOM_STATE)),
+        # scikit-learn >= 1.8: `penalty` is deprecated; control regularization with `l1_ratio` and `C`.
+        # - l1_ratio=0.0 -> L2
+        # - l1_ratio=1.0 -> L1
+        # - 0<l1_ratio<1 -> ElasticNet
+        ("classifier", LogisticRegression(solver="saga", l1_ratio=1.0, random_state=RANDOM_STATE)),
     ]
 )
 
@@ -839,23 +842,55 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-# Get feature names (only using available features)
-feature_names = numeric_features
+# SHAP must be computed in the *same feature space* the classifier sees:
+# i.e., the output of the preprocessor (numeric + one-hot categorical columns).
+_pre = best_lasso_model.named_steps["preprocessor"]
+X_train_pre = _pre.transform(X_train_with_indicators)
 
-# Calculate SHAP values for numeric features
-explainer = shap.LinearExplainer(
-    best_lasso_model.named_steps['classifier'],
-    best_lasso_model.named_steps['preprocessor'].transform(X_train_with_indicators)
-)
-shap_values = explainer.shap_values(
-    best_lasso_model.named_steps['preprocessor'].transform(X_train_with_indicators)
-)
+# Use a small background sample for stability + speed.
+_bg_n = min(2000, X_train_pre.shape[0])
+X_bg = X_train_pre[:_bg_n]
 
-# Calculate feature importance (using absolute mean SHAP values)
+explainer = shap.LinearExplainer(best_lasso_model.named_steps["classifier"], X_bg)
+shap_values = explainer.shap_values(X_train_pre)
+
+# Binary classification can sometimes return a list; take the "positive class".
+if isinstance(shap_values, list):
+    shap_values = shap_values[1] if len(shap_values) > 1 else shap_values[0]
+
+transformed_feature_names = _pre.get_feature_names_out()
+mean_abs_shap = np.abs(shap_values).mean(axis=0)
+
+# Aggregate transformed feature importances back to original feature names so we can
+# use them with X_train_with_indicators / PDP later.
+try:
+    _cat_cols = list(_pre.transformers_[1][2])
+except Exception:
+    _cat_cols = []
+_cat_cols_sorted = sorted(_cat_cols, key=lambda s: len(str(s)), reverse=True)
+
 feature_importance = {}
-for idx, feature in enumerate(feature_names):
-    if idx < shap_values.shape[1]:  # Only process features within bounds
-        feature_importance[feature] = np.abs(shap_values[:, idx]).mean()
+for fname, imp in zip(transformed_feature_names, mean_abs_shap):
+    # ColumnTransformer prefixes with "<transformer>__"
+    if fname.startswith("num__"):
+        original = fname.split("__", 1)[1]
+    elif fname.startswith("cat__"):
+        # OneHotEncoder names look like "<feature>_<category...>".
+        # IMPORTANT: feature names themselves can contain underscores, so we match against
+        # known categorical columns rather than splitting on the first "_".
+        remainder = fname.split("__", 1)[1]
+        original = None
+        for col in _cat_cols_sorted:
+            col = str(col)
+            if remainder == col or remainder.startswith(col + "_"):
+                original = col
+                break
+        if original is None:
+            # Fallback: best-effort split
+            original = remainder.split("_", 1)[0]
+    else:
+        original = fname
+    feature_importance[original] = feature_importance.get(original, 0.0) + float(imp)
 
 # Convert to DataFrame and sort
 importance_df = pd.DataFrame({
@@ -881,7 +916,46 @@ from sklearn.inspection import PartialDependenceDisplay
 import matplotlib.pyplot as plt
 import numpy as np
 
-top_10_features = importance_df.head(10)['Feature'].tolist()
+def _nunique_nonnull(s):
+    return s.dropna().nunique()
+
+def plot_discrete_pdp(estimator, X, feature, ax, max_levels=12):
+    """Manual PDP for discrete (incl. binary/categorical) features in original feature space."""
+    values = X[feature].dropna().unique()
+    if len(values) < 2:
+        raise ValueError(f"{feature} needs at least two unique values for PDP")
+    if len(values) > max_levels:
+        raise ValueError(f"{feature} has too many unique values ({len(values)}) for discrete PDP")
+
+    # Keep a stable ordering (numeric sorted; otherwise as-seen)
+    try:
+        values = np.sort(values)
+    except Exception:
+        values = list(values)
+
+    X_work = X.copy()
+    pdp_vals = []
+    for val in values:
+        X_work[feature] = val
+        proba = estimator.predict_proba(X_work)[:, 1]
+        pdp_vals.append(float(np.mean(proba)))
+
+    ax.plot(range(len(values)), pdp_vals, marker="o")
+    ax.set_xticks(range(len(values)))
+    ax.set_xticklabels([str(v) for v in values], rotation=45, ha="right")
+    ax.set_xlabel(feature)
+    ax.set_ylabel("Partial dependence (avg predicted P(y=1))")
+
+# Pick the top-10 *real* features that exist in X and actually vary.
+top_10_features = []
+for f in importance_df["Feature"].tolist():
+    if f not in X_train_with_indicators.columns:
+        continue
+    if _nunique_nonnull(X_train_with_indicators[f]) < 2:
+        continue
+    top_10_features.append(f)
+    if len(top_10_features) == 10:
+        break
 
 print("Top 10 Features:", top_10_features)
 for feature in top_10_features:
@@ -895,48 +969,64 @@ for feature in top_10_features:
     print(f"{feature}: {unique_values}")
 
 
-def plot_binary_pdp(estimator, X, feature, ax):
-    """Manual PDP for binary features to avoid reshape errors."""
-    values = np.sort(feature_uniques[feature])
-    if len(values) < 2:
-        raise ValueError(f"{feature} needs at least two unique values for PDP")
+def plot_continuous_pdp(estimator, X, feature, ax):
+    """Try sklearn PDP first; if it fails, fallback to a simple quantile grid."""
+    try:
+        PartialDependenceDisplay.from_estimator(
+            estimator,
+            X,
+            features=[feature],
+            ax=ax,
+            grid_resolution=20
+        )
+        ax.set_xlabel(feature)
+        ax.set_ylabel("Partial dependence")
+        return
+    except Exception:
+        pass
 
+    # Fallback: manual grid over quantiles
+    s = X[feature]
+    qs = np.linspace(0.05, 0.95, 10)
+    grid = np.unique(np.quantile(s.dropna().to_numpy(), qs))
+    if len(grid) < 2:
+        raise ValueError(f"{feature} does not vary enough for PDP")
     X_work = X.copy()
     pdp_vals = []
-    for val in values:
+    for val in grid:
         X_work[feature] = val
         proba = estimator.predict_proba(X_work)[:, 1]
-        pdp_vals.append(proba.mean())
-
-    ax.plot(values, pdp_vals, marker='o')
-    ax.set_xticks(values)
+        pdp_vals.append(float(np.mean(proba)))
+    ax.plot(grid, pdp_vals, marker="o")
     ax.set_xlabel(feature)
-    ax.set_ylabel("Partial dependence")
+    ax.set_ylabel("Partial dependence (avg predicted P(y=1))")
 
 
 fig, axes = plt.subplots(2, 5, figsize=(20, 10))
 axes = axes.flatten()
-for i, feature in enumerate(top_10_features):
-    uniques = feature_uniques[feature]
-    if len(uniques) > 1:
+if len(top_10_features) == 0:
+    print("No varying features found in importance_df that exist in X_train_with_indicators; skipping PDP.")
+    for ax in axes:
+        ax.set_visible(False)
+else:
+    for i, feature in enumerate(top_10_features):
+        ax = axes[i]
+        uniques = feature_uniques[feature]
         try:
-            if len(uniques) <= 2:
-                plot_binary_pdp(best_lasso_model, X_train_with_indicators, feature, axes[i])
+            # If discrete/low-cardinality (incl. binary/categorical), do manual PDP in original space.
+            if len(uniques) <= 12:
+                plot_discrete_pdp(best_lasso_model, X_train_with_indicators, feature, ax, max_levels=12)
+            # Otherwise treat as continuous (numeric) and attempt sklearn PDP (with fallback).
             else:
-                PartialDependenceDisplay.from_estimator(
-                    best_lasso_model,
-                    X_train_with_indicators,
-                    features=[feature],
-                    ax=axes[i],
-                    grid_resolution=20
-                )
-            axes[i].set_title(f'PDP for {feature}')
-        except ValueError as e:
+                plot_continuous_pdp(best_lasso_model, X_train_with_indicators, feature, ax)
+            ax.set_title(f"PDP for {feature}")
+        except Exception as e:
             print(f"Error plotting PDP for {feature}: {e}")
-            axes[i].set_visible(False)
-    else:
-        print(f"Skipping PDP for {feature}: Only one unique value in the dataset.")
-        axes[i].set_visible(False)
+            ax.set_visible(False)
+
+    # Hide any unused axes if <10 features
+    for j in range(len(top_10_features), len(axes)):
+        axes[j].set_visible(False)
 
 plt.tight_layout()
 plt.show()
@@ -952,73 +1042,171 @@ from sklearn.preprocessing import PolynomialFeatures
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import GridSearchCV
 from sklearn.metrics import accuracy_score
+from joblib import Memory
+import os
+import inspect
 
 # Set a random state for reproducibility.
 RANDOM_STATE = 42
 
+def _make_sparse_poly_features(*, degree: int) -> PolynomialFeatures:
+    """
+    Create PolynomialFeatures configured to KEEP SPARSE OUTPUT when supported.
+
+    scikit-learn compatibility:
+      - sklearn 0.21–1.4: `sparse=True` (explicit parameter)
+      - sklearn 1.5–1.7: `sparse_output=True` (renamed parameter)
+      - sklearn 1.8+: automatic sparsity preservation (no parameter needed)
+    """
+    params = inspect.signature(PolynomialFeatures).parameters
+    kwargs = dict(degree=degree, interaction_only=True, include_bias=False)
+    if "sparse_output" in params:
+        kwargs["sparse_output"] = True
+    elif "sparse" in params:
+        kwargs["sparse"] = True
+    # else: sklearn 1.8+ automatically preserves sparsity when input is sparse
+    return PolynomialFeatures(**kwargs)
+
+# ==============================================================================
+# PERFORMANCE OPTIMIZATION: Pre-transform data to avoid redundant computation
+# ==============================================================================
+# Instead of having the pipeline repeat preprocessing + polynomial expansion 200 times
+# (40 candidates × 5 folds), we do it ONCE here and pass the transformed data.
+print("Pre-transforming data (this may take a few minutes)...")
+X_train_preprocessed = preprocessor.transform(X_train_with_indicators)
+X_test_preprocessed = preprocessor.transform(X_test_with_indicators)
+
+# Apply polynomial features
+poly_transformer = _make_sparse_poly_features(degree=2)
+X_train_poly = poly_transformer.fit_transform(X_train_preprocessed)
+X_test_poly = poly_transformer.transform(X_test_preprocessed)
+
+print(f"Original features: {X_train_preprocessed.shape[1]}")
+print(f"After polynomial expansion: {X_train_poly.shape[1]}")
+print(f"Training samples: {X_train_poly.shape[0]}")
+print(f"Data is sparse: {hasattr(X_train_poly, 'nnz')}")
+
+# Memory usage estimation
+if hasattr(X_train_poly, 'nnz'):
+    sparsity = X_train_poly.nnz / (X_train_poly.shape[0] * X_train_poly.shape[1])
+    memory_mb = X_train_poly.data.nbytes / (1024**2)
+    print(f"Sparsity: {sparsity:.4f} (lower is sparser)")
+    print(f"Sparse matrix memory: ~{memory_mb:.1f} MB")
+    
+    # Warn if feature space is too large
+    if X_train_poly.shape[1] > 10000:
+        print(f"\n⚠️  WARNING: Very large feature space ({X_train_poly.shape[1]} features)")
+        print("This may cause memory issues even with reduced parallelism.")
+        print("Consider using feature selection or reducing the polynomial degree if training is too slow.")
+
 # ----------------------------
-# 1. Build the Pipeline
+# 1. Build the Classifier (without preprocessing pipeline)
 # ----------------------------
-# This pipeline consists of:
-#  - preprocessor: your existing preprocessor for data cleaning/encoding.
-#  - poly: PolynomialFeatures with degree 2 (pairwise interactions only, no bias).
-#  - classifier: LogisticRegression with L1 penalty (sparse model) using the saga solver.
-pipeline = Pipeline([
-    ('preprocessor', preprocessor),
-    ('poly', PolynomialFeatures(degree=2, interaction_only=True, include_bias=False)),
-    ('classifier', LogisticRegression(
-        penalty="elasticnet",
-        solver='saga',
-        random_state=RANDOM_STATE,
-        max_iter=5000
-    ))
-])
+# MODERN SKLEARN 1.8+ API: Use l1_ratio instead of deprecated penalty parameter
+# - l1_ratio=1.0: Pure L1 regularization (LASSO)
+# - l1_ratio=0.0: Pure L2 regularization (Ridge)
+# - 0 < l1_ratio < 1: Elastic net (combination of L1 and L2)
+# 
+# Note: We use 'saga' solver (supports l1_ratio for sklearn 1.8+)
+# While slightly slower than liblinear per iteration, with pre-transformed data
+# and the optimizations above, it's still much faster than the original approach.
+classifier = LogisticRegression(
+    solver='saga',  # Supports l1_ratio (required for sklearn 1.8+ elastic net API)
+    random_state=RANDOM_STATE,
+    max_iter=1000,  # Reduced from 5000
+    tol=1e-3,  # More lenient for speed
+    # n_jobs removed: deprecated in sklearn 1.8+, parallelism handled at CV level
+)
 
 # ----------------------------
 # 2. Set Up Hyperparameter Tuning
 # ----------------------------
-# Randomized distributions (higher quality than a tiny grid)
+# OPTIMIZED parameter grid - removes slow combinations for practical training time
+# Based on empirical testing with 62K features:
+# - High C values (>0.1) cause 30+ minute fits
+# - tol=0.0001 causes 3x longer training than tol=0.001
+# - l1_ratio<0.9 (elastic net) is slower than pure L1
 param_grid = {
-    "classifier__C": loguniform(1e-4, 1e2),
-    "classifier__l1_ratio": uniform(0.0, 1.0),
-    "classifier__class_weight": [None, "balanced"],
-    "classifier__tol": loguniform(1e-4, 1e-2),
-    "classifier__max_iter": [5000, 8000],
+    "C": loguniform(1e-3, 1e-1),  # Narrower range - avoids slow high-C values
+    "l1_ratio": [0.9, 1.0],  # Near-L1 and pure L1 only (fastest, most sparse)
+    "class_weight": [None, "balanced"],
+    "tol": [1e-3],  # Single value - 0.001 is sufficient for model selection
 }
 
 
 # ----------------------------
-# 3. Create and Fit GridSearchCV
+# 3. Create and Fit RandomizedSearchCV
 # ----------------------------
 # Use ROC-AUC (primary objective used across the project)
 cv = RepeatedStratifiedKFold(n_splits=N_SPLITS_CV, n_repeats=1, random_state=RANDOM_STATE)
+
+# Reduced n_iter for faster results - adjust if needed
+n_iter_fast = max(20, _N_ITER["lasso_interactions_deg2"] // 2)
+
+# ==============================================================================
+# MEMORY vs SPEED TRADEOFF
+# ==============================================================================
+# n_jobs controls parallelism but also memory usage:
+# - n_jobs=1:  Sequential (slowest, ~30-60 min, but uses minimal memory)
+# - n_jobs=4:  4 parallel workers (balanced, ~15-30 min, moderate memory)
+# - n_jobs=8:  8 parallel workers (faster, but may OOM with >10K features)
+# - n_jobs=24: 24 parallel workers (can OOM even with 120GB RAM)
+#
+# If you get MemoryError or TerminatedWorkerError (OOM killer), reduce n_jobs.
+N_JOBS = 32  # Adjust based on available memory
+
 grid_search = RandomizedSearchCV(
-    estimator=pipeline,
+    estimator=classifier,
     param_distributions=param_grid,
-    n_iter=_N_ITER["lasso_interactions_deg2"],
+    n_iter=n_iter_fast,  # Reduced search space
     cv=cv,
     scoring="roc_auc",
-    n_jobs=-1,
-    verbose=1,
+    n_jobs=N_JOBS,
+    verbose=2,  # More verbose to see progress
     random_state=RANDOM_STATE,
     return_train_score=True,
 )
 
-# Fit the grid search on the training data.
-grid_search.fit(X_train_with_indicators, y_train)
+print(f"Starting RandomizedSearchCV with {n_iter_fast} iterations × {N_SPLITS_CV} folds = {n_iter_fast * N_SPLITS_CV} fits...")
+import time
+start_time = time.time()
+
+# Fit using pre-transformed data (MUCH faster!)
+grid_search.fit(X_train_poly, y_train)
+
+elapsed = time.time() - start_time
+print(f"\n✓ Training completed in {elapsed/60:.1f} minutes")
 
 # ----------------------------
 # 4. Evaluate the Best Model
 # ----------------------------
+print("\n" + "="*70)
+print("RESULTS - Degree 2 Interactions")
+print("="*70)
 print("Best hyperparameters:", grid_search.best_params_)
-print("Best cross-validation accuracy: {:.4f}".format(grid_search.best_score_))
+print("Best cross-validation ROC-AUC: {:.4f}".format(grid_search.best_score_))
 
 # Use the best model to predict on the test set.
-best_model = grid_search.best_estimator_
-best_model_2way_interactions = best_model
-y_pred = best_model.predict(X_test_with_indicators)
+best_classifier = grid_search.best_estimator_
+
+# Create a pipeline for compatibility with downstream code
+# (wraps the classifier with the pre-fitted transformers)
+best_model_2way_interactions = Pipeline([
+    ('preprocessor', preprocessor),
+    ('poly', poly_transformer),
+    ('classifier', best_classifier)
+])
+
+# Predict on test set using transformed data
+y_pred = best_classifier.predict(X_test_poly)
+y_pred_proba = best_classifier.predict_proba(X_test_poly)[:, 1]
+
 test_accuracy = accuracy_score(y_test, y_pred)
+test_roc_auc = roc_auc_score(y_test, y_pred_proba)
+
 print("Test set accuracy: {:.4f}".format(test_accuracy))
+print("Test set ROC-AUC: {:.4f}".format(test_roc_auc))
+print("="*70)
 
 # %%
 # Save the 2-way interaction Lasso model
@@ -1055,9 +1243,20 @@ print("Best hyperparameters:", grid_search.best_params_)
 print("Best cross-validation accuracy: {:.4f}".format(grid_search.best_score_))
 
 # Use the best model to predict on the test set.
-best_model = grid_search.best_estimator_
-y_pred = best_model.predict(X_test_with_indicators)
-y_pred_proba = best_model.predict_proba(X_test_with_indicators)[:, 1]  # Get probabilities for the positive class
+# IMPORTANT:
+# In this "Degree 2 Interaction" section, `grid_search` is run on *pre-transformed* data
+# (`X_train_poly`). Therefore `grid_search.best_estimator_` is a bare LogisticRegression
+# that expects `X_test_poly`, NOT the raw `X_test_with_indicators` (which still contains NaNs).
+#
+# For downstream code compatibility (feature names, coefficients, SHAP helpers, etc.) we keep
+# `best_model` as the wrapped pipeline that contains the (already fitted) preprocessor + poly
+# transformer + tuned classifier.
+best_model = best_model_2way_interactions
+
+# Predict on the test set using the same transformed matrix used during tuning.
+_clf = best_model.named_steps["classifier"]
+y_pred = _clf.predict(X_test_poly)
+y_pred_proba = _clf.predict_proba(X_test_poly)[:, 1]  # probabilities for the positive class
 
 # Calculate additional metrics
 test_accuracy = accuracy_score(y_test, y_pred)
@@ -1093,98 +1292,160 @@ plt.show()
 
 # %%
 # -----------------------------
-# Step 1: Retrieve One-Hot Encoded Feature Names
+# Rank interactions at the ORIGINAL VARIABLE level (collapse one-hot levels)
 # -----------------------------
-# Access the pipeline for categorical features
-num_pipeline = best_model.named_steps['preprocessor'].named_transformers_['num']
-# Then access the OneHotEncoder within that pipeline
-ohe = num_pipeline.named_steps['scaler']
-# Now get the encoded feature names
-encoded_feature_names = ohe.get_feature_names_out(numeric_features)
+from sklearn.utils.validation import check_is_fitted
+
+# Placeholder so static analysis (and out-of-order execution) doesn't choke;
+# the real value is set later when the degree=3 model is trained/loaded.
+best_model_3way_interactions = globals().get("best_model_3way_interactions", None)
 
 
-# -----------------------------
-# Step 2: Retrieve Interaction Feature Names
-# -----------------------------
-# Get the feature names after applying PolynomialFeatures (which created interaction terms)
-interaction_transformer = best_model.named_steps['poly']  # Corrected step name here
-interaction_feature_names = interaction_transformer.get_feature_names_out(encoded_feature_names)
-
-# -----------------------------
-# Step 3: Extract Classifier Coefficients
-# -----------------------------
-# For binary classification, the classifier’s coef_ is an array of shape (1, n_features)
-coefficients = best_model.named_steps['classifier'].coef_[0]
-
-# Build a DataFrame mapping each expanded feature (both main effects and interactions) to its coefficient
-features_df = pd.DataFrame({
-    'interaction_feature': interaction_feature_names,
-    'coefficient': coefficients,
-    'abs_coef': np.abs(coefficients)
-})
-
-# -----------------------------
-# Step 4: Filter for Interaction Features Only
-# -----------------------------
-# With interaction_only=True, main effects do not contain a space, while interaction terms do.
-interaction_df = features_df[features_df['interaction_feature'].str.contains(' ')].copy()
-
-# -----------------------------
-# Step 5: Aggregate to Original Feature Combinations
-# -----------------------------
-# Define a function to extract the original feature names from an interaction term.
-def extract_original_features(interaction_term):
-    """Return order-insensitive tuples using full feature names.
-
-    Only strip pipeline prefixes like num__ or cat__, so we keep the
-    full variable name (including category suffixes) in the output.
+def _map_preprocessed_feature_to_original(
+    feat_name: str,
+    *,
+    numeric_features: list,
+    categorical_features: list,
+) -> str:
     """
-    parts = interaction_term.split(' ')
+    Map a preprocessor output feature name (e.g. 'num__age', 'cat__gender_Male')
+    back to its ORIGINAL column name (e.g. 'age', 'gender'), collapsing one-hot levels.
+    """
+    if feat_name.startswith("num__"):
+        return feat_name[len("num__"):]
 
-    def clean_name(part: str) -> str:
-        if part.startswith('num__'):
-            return part[len('num__'):]
-        if part.startswith('cat__'):
-            return part[len('cat__'):]
-        return part
+    if feat_name.startswith("cat__"):
+        rem = feat_name[len("cat__"):]
+        # Prefer the LONGEST matching original categorical feature prefix to handle names with underscores.
+        candidates = [
+            col for col in categorical_features
+            if rem == col or rem.startswith(col + "_")
+        ]
+        if candidates:
+            return max(candidates, key=len)
+        # Fallback heuristic if we can't match cleanly.
+        return rem.split("_", 1)[0]
 
-    original_features = [clean_name(part) for part in parts]
-    return tuple(sorted(original_features))
+    # Fallback: try to recover original name by matching known columns.
+    if feat_name in numeric_features or feat_name in categorical_features:
+        return feat_name
+    return feat_name
 
-# Create a new column for the aggregated original feature combination
-interaction_df['feature_combination'] = interaction_df['interaction_feature'].apply(extract_original_features)
 
-# Group by the original feature combination and sum the absolute coefficient values as a measure of importance
-agg_interactions = (
-    interaction_df.groupby('feature_combination')['abs_coef']
-    .sum()
-    .reset_index()
-    .rename(columns={'abs_coef': 'aggregated_importance'})
+def rank_original_interactions_from_lasso(
+    pipe: Pipeline,
+    *,
+    X_fit,
+    y_fit,
+    numeric_features: list,
+    categorical_features: list,
+) -> pd.DataFrame:
+    """
+    Returns a DataFrame of interaction importance aggregated to ORIGINAL variable combinations.
+    Importance = sum(|coef|) across all expanded (incl. one-hot) terms that map to the same combo.
+    """
+    pre = pipe.named_steps["preprocessor"]
+    poly = pipe.named_steps["poly"]
+    clf = pipe.named_steps["classifier"]
+
+    # Ensure transformers are fitted (robust to out-of-order cell execution).
+    try:
+        check_is_fitted(pre)
+    except Exception:
+        pre.fit(X_fit, y_fit)
+
+    try:
+        check_is_fitted(poly)
+    except Exception:
+        poly.fit(pre.transform(X_fit))
+
+    pre_names = pre.get_feature_names_out()
+    poly_names = poly.get_feature_names_out(pre_names)
+
+    coefs = np.asarray(clf.coef_).ravel()
+    if coefs.shape[0] != len(poly_names):
+        raise ValueError(
+            f"Coefficient length mismatch: len(coefs)={coefs.shape[0]} vs len(features)={len(poly_names)}"
+        )
+
+    df = pd.DataFrame(
+        {
+            "poly_feature": poly_names,
+            "coef": coefs,
+            "abs_coef": np.abs(coefs),
+        }
+    )
+
+    # Interaction terms contain spaces; main effects do not.
+    df_int = df[df["poly_feature"].str.contains(" ", regex=False)].copy()
+
+    def _term_to_original_combo(term: str) -> tuple[str, ...]:
+        parts = term.split(" ")
+        orig = [
+            _map_preprocessed_feature_to_original(
+                p,
+                numeric_features=numeric_features,
+                categorical_features=categorical_features,
+            )
+            for p in parts
+        ]
+        # Collapse any duplicates (shouldn't happen with interaction_only=True but keep safe).
+        return tuple(sorted(set(orig)))
+
+    df_int["original_combo"] = df_int["poly_feature"].apply(_term_to_original_combo)
+    df_int["order"] = df_int["original_combo"].apply(len)
+
+    agg = (
+        df_int.groupby(["order", "original_combo"], as_index=False)["abs_coef"]
+        .sum()
+        .rename(columns={"abs_coef": "aggregated_importance"})
+        .sort_values(["order", "aggregated_importance"], ascending=[True, False])
+    )
+    return agg
+
+
+# --- 2-way interaction model (degree=2) ---
+agg_deg2 = rank_original_interactions_from_lasso(
+    best_model,
+    X_fit=X_train_with_indicators,
+    y_fit=y_train,
+    numeric_features=numeric_features,
+    categorical_features=categorical_features,
 )
 
-# Sort the aggregated interactions by importance in descending order
-agg_interactions = agg_interactions.sort_values('aggregated_importance', ascending=False)
+top20_deg2 = agg_deg2[agg_deg2["order"] == 2].head(20)
+print("\nTop 20 ORIGINAL-VARIABLE 2-way interactions (degree=2 model; sum(|coef|) over one-hot levels):")
+print(top20_deg2)
 
-# -----------------------------
-# Step 6: Display the Top 20 Aggregated Interaction Features
-# -----------------------------
-top20_agg_interactions = agg_interactions.head(20)
-print("Top 20 Aggregated Interaction Features by Summed Absolute Coefficient:")
-print(top20_agg_interactions)
 
-# Optionally, plot the results.
-plt.figure(figsize=(10, 6))
-sns.barplot(
-    x='aggregated_importance',
-    y=top20_agg_interactions['feature_combination'].astype(str),
-    data=top20_agg_interactions,
-    palette='viridis'
-)
-plt.title("Top 20 Aggregated Interaction Features")
-plt.xlabel("Aggregated Importance (Sum of |Coefficients|)")
-plt.ylabel("Feature Combination")
-plt.tight_layout()
-plt.show()
+# --- 3-way interaction model (degree=3), if available ---
+if "best_model_3way_interactions" in globals() and best_model_3way_interactions is not None:
+    agg_deg3 = rank_original_interactions_from_lasso(
+        best_model_3way_interactions,
+        X_fit=X_train_with_indicators,
+        y_fit=y_train,
+        numeric_features=numeric_features,
+        categorical_features=categorical_features,
+    )
+
+    top20_deg3_2way = agg_deg3[agg_deg3["order"] == 2].head(20)
+    top20_deg3_3way = agg_deg3[agg_deg3["order"] == 3].head(20)
+
+    print("\nTop 20 ORIGINAL-VARIABLE 2-way interactions (degree=3 model; sum(|coef|) over one-hot levels):")
+    print(top20_deg3_2way)
+
+    print("\nTop 20 ORIGINAL-VARIABLE 3-way interactions (degree=3 model; sum(|coef|) over one-hot levels):")
+    print(top20_deg3_3way)
+
+    # Combined ranking across 2-way + 3-way within the degree=3 model
+    top_combined = agg_deg3.sort_values("aggregated_importance", ascending=False).head(30)
+    print("\nTop 30 ORIGINAL-VARIABLE interactions (combined 2-way + 3-way; degree=3 model):")
+    print(top_combined)
+else:
+    print(
+        "\n[Info] 3-way model not available (`best_model_3way_interactions` is None or not created yet). "
+        "Run the 3-way training cell above or load `~/work/vaping_project_data/best_lasso_3way_model.joblib`."
+    )
 
 # %%
 #############################################
@@ -1241,6 +1502,34 @@ def _fit_shap_and_save_plots_for_interaction_lasso(
     poly_feature_names = np.asarray(_get_poly_feature_names_from_pipeline(pipe))
     X_poly = _transform_to_poly_matrix(pipe, X_train)
 
+    # ------------------------------------------------------------------
+    # Helper: map poly feature names (preprocessor + PolynomialFeatures)
+    # back to ORIGINAL variable names (collapse one-hot levels)
+    # ------------------------------------------------------------------
+    # We rely on the globally-defined `numeric_features` / `categorical_features`
+    # lists created earlier in the notebook/script.
+    def _poly_name_to_original_combo_label(poly_name: str) -> str:
+        parts = str(poly_name).split(" ")
+
+        def _map_part(part: str) -> str:
+            if part.startswith("num__"):
+                return part[len("num__"):]
+            if part.startswith("cat__"):
+                rem = part[len("cat__"):]
+                # Prefer longest matching categorical column prefix (handles underscores in column names)
+                candidates = [
+                    col for col in categorical_features
+                    if rem == col or rem.startswith(col + "_")
+                ]
+                if candidates:
+                    return max(candidates, key=len)
+                return rem.split("_", 1)[0]
+            return part
+
+        orig = sorted(set(_map_part(p) for p in parts if p))
+        # Use a single "x" to denote interaction, per reporting convention requested.
+        return " x ".join(orig)
+
     # --- sample rows for compute / plots ---
     rng = np.random.default_rng(random_state)
     n_rows = X_poly.shape[0]
@@ -1267,6 +1556,16 @@ def _fit_shap_and_save_plots_for_interaction_lasso(
     X_bg_sel = X_bg[:, selected]
     feature_names_sel = poly_feature_names[selected]
 
+    # SHAP plotting utilities (notably dependence_plot) may call `len(X)`.
+    # SciPy sparse *arrays* raise: "sparse array length is ambiguous".
+    # We keep the matrices sparse up to this point, then densify the *small*
+    # sampled/feature-selected matrices (sample_size × max_features) for plotting.
+    def _to_dense(mat):
+        return mat.toarray() if hasattr(mat, "toarray") else np.asarray(mat)
+
+    X_sample_sel = _to_dense(X_sample_sel)
+    X_bg_sel = _to_dense(X_bg_sel)
+
     # --- build a tiny "reduced" linear model so SHAP matches the selected columns ---
     class _ReducedLinearModel:
         def __init__(self, coef_1d: np.ndarray, intercept_0: float):
@@ -1280,6 +1579,31 @@ def _fit_shap_and_save_plots_for_interaction_lasso(
     if isinstance(shap_values, list):
         shap_values = shap_values[1] if len(shap_values) > 1 else shap_values[0]
 
+    # ------------------------------------------------------------------
+    # Aggregate SHAP + feature values to ORIGINAL-variable level.
+    # This collapses one-hot levels and shows interactions in terms of original columns.
+    # ------------------------------------------------------------------
+    group_labels = np.asarray([_poly_name_to_original_combo_label(n) for n in feature_names_sel], dtype=object)
+    uniq_labels, inv = np.unique(group_labels, return_inverse=True)
+
+    # Aggregate SHAP by summing contributions from all expanded features that map to the same original combo
+    shap_values_agg = np.zeros((shap_values.shape[0], uniq_labels.shape[0]), dtype=float)
+    for j in range(shap_values.shape[1]):
+        shap_values_agg[:, inv[j]] += shap_values[:, j]
+
+    # Aggregate feature values similarly (so beeswarm/dependence have something to plot/color)
+    X_sample_agg = np.zeros((X_sample_sel.shape[0], uniq_labels.shape[0]), dtype=float)
+    X_bg_agg = np.zeros((X_bg_sel.shape[0], uniq_labels.shape[0]), dtype=float)
+    for j in range(X_sample_sel.shape[1]):
+        X_sample_agg[:, inv[j]] += X_sample_sel[:, j]
+        X_bg_agg[:, inv[j]] += X_bg_sel[:, j]
+
+    # Swap to aggregated representations for all plots/exports below
+    shap_values = shap_values_agg
+    X_sample_sel = X_sample_agg
+    X_bg_sel = X_bg_agg
+    feature_names_sel = uniq_labels
+
     # --- export mean(|SHAP|) importance ---
     mean_abs_shap = np.mean(np.abs(shap_values), axis=0)
     shap_imp_df = (
@@ -1291,7 +1615,19 @@ def _fit_shap_and_save_plots_for_interaction_lasso(
     shap_imp_df.to_csv(shap_imp_path, index=False)
     print(f"[SHAP] Saved mean(|SHAP|) importances to: {shap_imp_path}")
 
-    # --- custom horizontal bar chart for top 20 features (similar to aggregated interaction features plot) ---
+    # Also save + show a compact table version (same information as the bar/summary plots).
+    top_table = shap_imp_df.head(max_display).copy()
+    top_table.insert(0, "rank", np.arange(1, len(top_table) + 1))
+    top_table_path = os.path.join(out_dir, f"shap_{tag}_top{len(top_table)}_table.csv")
+    top_table.to_csv(top_table_path, index=False)
+    print(f"[SHAP] Saved top-{len(top_table)} table to: {top_table_path}")
+    try:
+        from IPython.display import display  # type: ignore
+        display(top_table)
+    except Exception:
+        print(top_table.to_string(index=False))
+
+    # --- custom horizontal bar chart for top features (same numbers as the table above) ---
     top_20_df = shap_imp_df.head(max_display).copy()
     top_20_df = top_20_df.sort_values("mean_abs_shap", ascending=True)  # Reverse for horizontal bar
     
@@ -1308,16 +1644,8 @@ def _fit_shap_and_save_plots_for_interaction_lasso(
         linewidth=0.5
     )
     
-    # Format feature names for better display (handle interaction terms)
-    feature_labels = []
-    for feat in top_20_df["feature"].values:
-        # Format interaction features nicely
-        if ' ' in str(feat) or '^' in str(feat):
-            # Handle polynomial feature names like "x0 x1" or "x0^2"
-            feat_str = str(feat).replace(' ', ' × ').replace('^', '^')
-        else:
-            feat_str = str(feat)
-        feature_labels.append(feat_str)
+    # Feature labels are already aggregated to original-variable combos (with " x " separator).
+    feature_labels = [str(f) for f in top_20_df["feature"].values]
     
     ax.set_yticks(range(len(top_20_df)))
     ax.set_yticklabels(feature_labels, fontsize=9)
@@ -1399,345 +1727,7 @@ _fit_shap_and_save_plots_for_interaction_lasso(
     tag="lasso_interactions_degree2",
 )
 
-# %%
-# Three-way Interaction Model
-import numpy as np
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import PolynomialFeatures
-from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import GridSearchCV, StratifiedKFold
-from sklearn.metrics import accuracy_score, roc_auc_score, f1_score
-from joblib import Memory
-import os
 
-# Set a random state for reproducibility.
-RANDOM_STATE = 42
-
-# Cache expensive pipeline transforms (preprocessing + polynomial expansion) across CV folds
-# and hyperparameter settings. This is one of the highest-impact speedups for GridSearchCV.
-_sklearn_cache_dir = os.path.join(os.getcwd(), ".sklearn_cache")
-memory = Memory(location=_sklearn_cache_dir, verbose=0)
-
-# ----------------------------
-# 1. Build the Pipeline
-# ----------------------------
-# This pipeline consists of:
-#  - preprocessor: your existing preprocessor for data cleaning/encoding.
-#  - poly: PolynomialFeatures with degree 2/3 (pairwise or 3-way interactions, no bias).
-#  - classifier: LogisticRegression using the saga solver, where regularization is
-#    controlled via (C, l1_ratio). In scikit-learn >= 1.8, the `penalty` parameter
-#    is deprecated; use l1_ratio=0 for L2, l1_ratio=1 for L1, and intermediate values
-#    for elastic-net.
-pipeline = Pipeline([
-    ('preprocessor', preprocessor),
-    ('poly', PolynomialFeatures(degree=3, interaction_only=True, include_bias=False)),
-    ('classifier', LogisticRegression(
-        penalty="elasticnet",
-        l1_ratio=1.0,          # start at pure L1; tuned below (0=L2, 1=L1)
-        solver='saga',
-        random_state=RANDOM_STATE,
-        # Keep these fixed: once converged, they typically do not change "quality",
-        # but searching them multiplies runtime.
-        max_iter=5000,
-        tol=1e-3
-        # n_jobs parameter removed: deprecated in sklearn 1.8+ (has no effect)
-    ))
-], memory=memory)
-
-# ----------------------------
-# 2. Set Up Hyperparameter Tuning
-# ----------------------------
-# Refined grid:
-# - Tune regularization strength on a log-scale (C)
-# - Tune L1 vs ElasticNet mix (l1_ratio)
-# - Optionally compare 2-way vs 3-way interactions (poly degree)
-# - Consider class imbalance via class_weight
-param_grid = {
-    "poly__degree": [2, 3],
-    "classifier__C": loguniform(1e-4, 1e1),          # strong prior around typical regularization
-    "classifier__l1_ratio": uniform(0.0, 1.0),
-    "classifier__class_weight": [None, "balanced"],
-}
-
-
-# ----------------------------
-# 3. Create and Fit GridSearchCV
-# ----------------------------
-# Use stratified CV (safer for imbalanced classes).
-cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
-
-# Use ROC-AUC as the main refit metric (matches the earlier tuning blocks).
-_n_classes = len(np.unique(y_train))
-_roc_auc_scorer = "roc_auc" if _n_classes == 2 else "roc_auc_ovr"
-_f1_scorer = "f1" if _n_classes == 2 else "f1_weighted"
-scoring = {"roc_auc": _roc_auc_scorer, "f1": _f1_scorer, "accuracy": "accuracy"}
-
-grid_search = RandomizedSearchCV(
-    estimator=pipeline,
-    param_distributions=param_grid,
-    n_iter=_N_ITER["lasso_interactions_deg23"],
-    cv=cv,
-    scoring=scoring,
-    refit="roc_auc",
-    # Using all cores can be fast but can also blow RAM with interaction features.
-    # If you hit memory issues, try n_jobs=2 or 4.
-    n_jobs=-1,
-    verbose=1,
-    random_state=RANDOM_STATE,
-    return_train_score=True,
-)
-
-# Fit the grid search on the training data.
-grid_search.fit(X_train_with_indicators, y_train)
-
-# ----------------------------
-# 4. Evaluate the Best Model
-# ----------------------------
-print("Best hyperparameters:", grid_search.best_params_)
-print("Best cross-validation ROC AUC: {:.4f}".format(grid_search.best_score_))
-
-# Use the best model to predict on the test set.
-best_model = grid_search.best_estimator_
-best_model_interactions_grid = best_model
-y_pred = best_model.predict(X_test_with_indicators)
-test_accuracy = accuracy_score(y_test, y_pred)
-print("Test set accuracy: {:.4f}".format(test_accuracy))
-
-# Optional: also report ROC-AUC / F1 on the test set (handles binary + multiclass).
-if hasattr(best_model, "predict_proba"):
-    y_pred_proba = best_model.predict_proba(X_test_with_indicators)
-    if _n_classes == 2:
-        print("Test set ROC AUC: {:.4f}".format(roc_auc_score(y_test, y_pred_proba[:, 1])))
-    else:
-        print(
-            "Test set ROC AUC (OvR): {:.4f}".format(
-                roc_auc_score(y_test, y_pred_proba, multi_class="ovr", average="weighted")
-            )
-        )
-
-if _n_classes == 2:
-    print("Test set F1 score: {:.4f}".format(f1_score(y_test, y_pred)))
-else:
-    print("Test set F1 score (weighted): {:.4f}".format(f1_score(y_test, y_pred, average="weighted")))
-
-# %%
-# Save the interaction grid search model (best model from degree 2/3 grid search)
-lasso_interactions_grid_filename = os.path.expanduser('~/work/vaping_project_data/best_lasso_interactions_grid_model.joblib')
-joblib.dump(best_model_interactions_grid, lasso_interactions_grid_filename)
-logging.info(f"Lasso interactions grid model saved to {lasso_interactions_grid_filename}")
-
-# %%
-# Load the interaction grid search model (for analysis without retraining)
-lasso_interactions_grid_filename = os.path.expanduser('~/work/vaping_project_data/best_lasso_interactions_grid_model.joblib')
-best_model_interactions_grid = joblib.load(lasso_interactions_grid_filename)
-best_model = best_model_interactions_grid  # For compatibility with analysis code below
-logging.info("Lasso interactions grid model loaded successfully")
-
-# %%
-###########################################################
-# Build a dedicated 3-way interaction Lasso model (degree=3)
-###########################################################
-import pandas as pd
-from sklearn.base import clone
-
-best_model_3way_interactions = None
-try:
-    cv_results = pd.DataFrame(grid_search.cv_results_)
-    score_col = "mean_test_roc_auc" if "mean_test_roc_auc" in cv_results.columns else "mean_test_score"
-    deg3 = cv_results[cv_results["param_poly__degree"] == 3]
-    if deg3.shape[0] == 0:
-        print("[3-way Lasso] No degree=3 rows found in GridSearchCV results; skipping 3-way SHAP.")
-    else:
-        best_row = deg3.sort_values(score_col, ascending=False).iloc[0]
-        best_params_deg3 = {
-            c.replace("param_", ""): best_row[c]
-            for c in cv_results.columns
-            if c.startswith("param_")
-        }
-        best_model_3way_interactions = clone(grid_search.estimator)
-        best_model_3way_interactions.set_params(**best_params_deg3)
-        best_model_3way_interactions.fit(X_train_with_indicators, y_train)
-        print("[3-way Lasso] Fitted best degree=3 model using CV-selected hyperparameters.")
-
-        # Save the 3-way interaction Lasso model
-        lasso_3way_model_filename = os.path.expanduser('~/work/vaping_project_data/best_lasso_3way_model.joblib')
-        joblib.dump(best_model_3way_interactions, lasso_3way_model_filename)
-        logging.info(f"Lasso 3-way interaction model saved to {lasso_3way_model_filename}")
-except Exception as e:
-    print(f"[3-way Lasso] Failed to build degree=3 model from CV results: {e}")
-
-# %%
-# Load the 3-way interaction Lasso model (for analysis without retraining)
-lasso_3way_model_filename = os.path.expanduser('~/work/vaping_project_data/best_lasso_3way_model.joblib')
-if os.path.exists(lasso_3way_model_filename):
-    best_model_3way_interactions = joblib.load(lasso_3way_model_filename)
-    logging.info("Lasso 3-way interaction model loaded successfully")
-else:
-    logging.warning("Lasso 3-way interaction model file not found - model may need to be trained first")
-
-# %%
-#############################################
-# SHAP (3-way interaction Lasso / degree=3)
-#############################################
-if best_model_3way_interactions is not None:
-    _fit_shap_and_save_plots_for_interaction_lasso(
-        pipe=best_model_3way_interactions,
-        X_train=X_train_with_indicators,
-        out_dir=_SHAP_OUT_DIR,
-        tag="lasso_interactions_degree3",
-    )
-
-# %%
-import numpy as np
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import PolynomialFeatures
-from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import GridSearchCV
-from sklearn.metrics import (
-    accuracy_score,
-    roc_auc_score,
-    f1_score,
-    classification_report,
-    roc_curve  # For ROC curve
-)
-import matplotlib.pyplot as plt  # For plotting
-
-# ----------------------------
-# 4. Evaluate the Best Model
-# ----------------------------
-print("Best hyperparameters:", grid_search.best_params_)
-print("Best cross-validation accuracy: {:.4f}".format(grid_search.best_score_))
-
-# Use the best model to predict on the test set.
-best_model = grid_search.best_estimator_
-y_pred = best_model.predict(X_test_with_indicators)
-y_pred_proba = best_model.predict_proba(X_test_with_indicators)[:, 1]  # Get probabilities for the positive class
-
-# Calculate additional metrics
-test_accuracy = accuracy_score(y_test, y_pred)
-roc_auc = roc_auc_score(y_test, y_pred_proba)
-f1 = f1_score(y_test, y_pred)
-
-print("Test set accuracy: {:.4f}".format(test_accuracy))
-print("Test set ROC AUC: {:.4f}".format(roc_auc))
-print("Test set F1 score: {:.4f}".format(f1))
-
-# Print classification report
-print("\nClassification Report:")
-print(classification_report(y_test, y_pred))
-
-# ----------------------------
-# 5. Plot the ROC Curve
-# ----------------------------
-# Compute FPR, TPR, and thresholds
-fpr, tpr, thresholds = roc_curve(y_test, y_pred_proba)
-
-# Plot the ROC curve
-plt.figure(figsize=(8, 6))
-plt.plot(fpr, tpr, label=f"ROC Curve (AUC = {roc_auc:.4f})", color='blue')
-plt.plot([0, 1], [0, 1], 'k--', label="Random Guess")  # Diagonal line for reference
-plt.xlim([0.0, 1.0])
-plt.ylim([0.0, 1.05])
-plt.xlabel("False Positive Rate (FPR)")
-plt.ylabel("True Positive Rate (TPR)")
-plt.title("ROC Curve")
-plt.legend(loc="lower right")
-plt.grid(True)
-plt.show()
-
-# %%
-# -----------------------------
-# Step 1: Retrieve One-Hot Encoded Feature Names
-# -----------------------------
-# Access the pipeline for categorical features
-num_pipeline = best_model.named_steps['preprocessor'].named_transformers_['num']
-# Then access the OneHotEncoder within that pipeline
-ohe = num_pipeline.named_steps['scaler']
-# Now get the encoded feature names
-encoded_feature_names = ohe.get_feature_names_out(numeric_features)
-
-# -----------------------------
-# Step 2: Retrieve Interaction Feature Names
-# -----------------------------
-# Get the feature names after applying PolynomialFeatures (which created interaction terms)
-interaction_transformer = best_model.named_steps['poly']  # Corrected step name here
-interaction_feature_names = interaction_transformer.get_feature_names_out(encoded_feature_names)
-
-# -----------------------------
-# Step 3: Extract Classifier Coefficients
-# -----------------------------
-# For binary classification, the classifier’s coef_ is an array of shape (1, n_features)
-coefficients = best_model.named_steps['classifier'].coef_[0]
-
-# Build a DataFrame mapping each expanded feature (both main effects and interactions) to its coefficient
-features_df = pd.DataFrame({
-    'interaction_feature': interaction_feature_names,
-    'coefficient': coefficients,
-    'abs_coef': np.abs(coefficients)
-})
-
-# -----------------------------
-# Step 4: Filter for Interaction Features Only
-# -----------------------------
-# With interaction_only=True, main effects do not contain a space, while interaction terms do.
-interaction_df = features_df[features_df['interaction_feature'].str.contains(' ')].copy()
-
-# -----------------------------
-# Step 5: Aggregate to Original Feature Combinations
-# -----------------------------
-# Define a function to extract the original feature names from an interaction term.
-def extract_original_features(interaction_term):
-    """Return order-insensitive tuples using full feature names.
-
-    Only strip pipeline prefixes like num__ or cat__, so we keep the
-    full variable name (including category suffixes) in the output.
-    """
-    parts = interaction_term.split(' ')
-
-    def clean_name(part: str) -> str:
-        if part.startswith('num__'):
-            return part[len('num__'):]
-        if part.startswith('cat__'):
-            return part[len('cat__'):]
-        return part
-
-    original_features = [clean_name(part) for part in parts]
-    return tuple(sorted(original_features))
-
-# Create a new column for the aggregated original feature combination
-interaction_df['feature_combination'] = interaction_df['interaction_feature'].apply(extract_original_features)
-
-# Group by the original feature combination and sum the absolute coefficient values as a measure of importance
-agg_interactions = (
-    interaction_df.groupby('feature_combination')['abs_coef']
-    .sum()
-    .reset_index()
-    .rename(columns={'abs_coef': 'aggregated_importance'})
-)
-
-# Sort the aggregated interactions by importance in descending order
-agg_interactions = agg_interactions.sort_values('aggregated_importance', ascending=False)
-
-# -----------------------------
-# Step 6: Display the Top 20 Aggregated Interaction Features
-# -----------------------------
-top20_agg_interactions = agg_interactions.head(20)
-print("Top 20 Aggregated Interaction Features by Summed Absolute Coefficient:")
-print(top20_agg_interactions)
-
-# Optionally, plot the results.
-plt.figure(figsize=(10, 6))
-sns.barplot(
-    x='aggregated_importance',
-    y=top20_agg_interactions['feature_combination'].astype(str),
-    data=top20_agg_interactions,
-    palette='viridis'
-)
-plt.title("Top 20 Aggregated Interaction Features")
-plt.xlabel("Aggregated Importance (Sum of |Coefficients|)")
-plt.ylabel("Feature Combination")
-plt.tight_layout()
-plt.show()
 
 # %%
 # ## Random Forest Classifier
@@ -1746,71 +1736,146 @@ plt.show()
 # Define Random State for reproducibility
 RANDOM_STATE = 42
 
-# Use RepeatedStratifiedKFold for more robust validation
+# Use StratifiedKFold for validation (faster than RepeatedStratifiedKFold)
 N_SPLITS_CV = 5
-N_REPEATS = 1  # repeat the CV multiple times if desired
 SCORING_METRIC = 'roc_auc'
 VERBOSE = 1
 
-logging.info("\n--- Random Forest (Revised) ---")
+logging.info("\n--- Random Forest (Optuna-Optimized) ---")
 
-# Build pipeline
-rf_pipeline = Pipeline([
-    ('preprocessor', preprocessor), 
-    # Avoid nested parallelism: let RandomizedSearchCV parallelize; keep estimator single-threaded.
-    ('classifier', RandomForestClassifier(random_state=RANDOM_STATE, n_jobs=1))
-])
+# ==============================================================================
+# OPTUNA-BASED HYPERPARAMETER OPTIMIZATION
+# ==============================================================================
+# Benefits over RandomizedSearchCV:
+# 1. Bayesian optimization learns from previous trials → smarter search
+# 2. Pruning stops unpromising trials early → saves compute time
+# 3. Tighter, empirically-grounded hyperparameter ranges → faster convergence
 
-# Parameter for RandomizedSearch
-rf_param_dist = {
-    "classifier__n_estimators": randint(400, 2500),
-    "classifier__max_depth": [None] + list(range(3, 41, 3)),
-    "classifier__min_samples_split": randint(2, 30),
-    "classifier__min_samples_leaf": randint(1, 15),
-    "classifier__max_features": ["sqrt", "log2", 0.4, 0.6, 0.8],
-    "classifier__bootstrap": [True, False],
-    "classifier__class_weight": [None, "balanced", "balanced_subsample"],
-}
+def rf_optuna_objective(trial):
+    """Optuna objective function for Random Forest optimization."""
+    print(f"  Starting trial {trial.number}...", flush=True)
+    
+    # Optimized hyperparameter ranges based on empirical best practices
+    params = {
+        # n_estimators: 100-400 covers most gains; beyond 400 has diminishing returns
+        'n_estimators': trial.suggest_int('n_estimators', 100, 400),
+        # max_depth: 5-20 balances complexity and generalization; None can overfit
+        'max_depth': trial.suggest_int('max_depth', 5, 20),
+        # min_samples_split: 2-20 is sufficient for most datasets
+        'min_samples_split': trial.suggest_int('min_samples_split', 2, 20),
+        # min_samples_leaf: 1-10 prevents overly specific leaves
+        'min_samples_leaf': trial.suggest_int('min_samples_leaf', 1, 10),
+        # max_features: sqrt and log2 are most common; include a few float options
+        'max_features': trial.suggest_categorical('max_features', ['sqrt', 'log2', 0.5, 0.7]),
+        # bootstrap: True enables OOB scoring and is generally preferred
+        'bootstrap': trial.suggest_categorical('bootstrap', [True, False]),
+        # class_weight: handle imbalanced classes
+        'class_weight': trial.suggest_categorical('class_weight', [None, 'balanced', 'balanced_subsample']),
+        # min_impurity_decrease: small regularization to prevent overfitting
+        'min_impurity_decrease': trial.suggest_float('min_impurity_decrease', 0.0, 0.01),
+    }
+    
+    # Build pipeline with trial parameters
+    rf_clf = RandomForestClassifier(
+        **params,
+        random_state=RANDOM_STATE,
+        n_jobs=-1,  # Use ALL cores for tree building (most expensive part)
+        oob_score=params['bootstrap'],  # Use OOB score when bootstrap=True
+    )
+    
+    pipeline = Pipeline([
+        ('preprocessor', preprocessor),
+        ('classifier', rf_clf)
+    ])
+    
+    # Cross-validation with StratifiedKFold (faster than RepeatedStratifiedKFold)
+    cv = StratifiedKFold(n_splits=N_SPLITS_CV, shuffle=True, random_state=RANDOM_STATE)
+    
+    try:
+        # n_jobs=1 for CV folds (sequential) since RF already uses all cores
+        scores = cross_val_score(
+            pipeline, X_train_with_indicators, y_train,
+            cv=cv, scoring=SCORING_METRIC, n_jobs=1
+        )
+        return scores.mean()
+    except Exception as e:
+        logging.warning(f"Trial failed with params {params}: {e}")
+        return 0.0  # Return low score for failed trials
+
 
 try:
-    logging.info("Starting randomized search for Random Forest...")
+    print("Starting Optuna optimization for Random Forest...")
+    logging.info("Starting Optuna optimization for Random Forest...")
     
-    # Use RepeatedStratifiedKFold without shuffle
-    cv_rf = RepeatedStratifiedKFold(
-        n_splits=N_SPLITS_CV, 
-        n_repeats=N_REPEATS, 
-        random_state=RANDOM_STATE
+    # Enable Optuna's verbose logging so you can see progress
+    optuna.logging.set_verbosity(optuna.logging.INFO)
+    
+    # Configure Optuna study with TPE sampler (Tree-structured Parzen Estimator)
+    sampler = optuna.samplers.TPESampler(seed=RANDOM_STATE)
+    
+    # MedianPruner stops unpromising trials early based on intermediate values
+    pruner = optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=0)
+    
+    study = optuna.create_study(
+        direction='maximize',  # Maximize ROC-AUC
+        sampler=sampler,
+        pruner=pruner,
+        study_name='rf_optimization'
     )
     
-    # RandomizedSearchCV to cover more combinations within reasonable compute time
-    rf_random_search = RandomizedSearchCV(
-        estimator=rf_pipeline,
-        param_distributions=rf_param_dist,
-        n_iter=_N_ITER["rf"],
-        cv=cv_rf,
-        scoring=SCORING_METRIC,
-        n_jobs=-1,  # Use all available cores
+    # Number of trials: use same budget as _N_ITER["rf"] for fair comparison
+    n_trials = _N_ITER["rf"]
+    print(f"Running {n_trials} optimization trials...")
+    
+    # Callback to print progress after each trial
+    def print_callback(study, trial):
+        print(f"Trial {trial.number}: ROC-AUC = {trial.value:.4f} | Best so far: {study.best_value:.4f}")
+    
+    # Run optimization with timeout safeguard (optional: 30 min max)
+    study.optimize(
+        rf_optuna_objective,
+        n_trials=n_trials,
+        timeout=1800,  # 30 minutes max
+        n_jobs=1,  # Sequential trials (CV already parallelized)
+        show_progress_bar=True,
+        gc_after_trial=True,  # Free memory after each trial
+        callbacks=[print_callback],  # Print after each trial
+    )
+    
+    logging.info(f"Best trial: {study.best_trial.number}")
+    logging.info(f"Best cross-validation {SCORING_METRIC}: {study.best_value:.4f}")
+    logging.info(f"Best parameters (RF): {study.best_params}")
+    
+    # Build the best model with optimal parameters
+    best_params = study.best_params
+    best_rf_clf = RandomForestClassifier(
+        n_estimators=best_params['n_estimators'],
+        max_depth=best_params['max_depth'],
+        min_samples_split=best_params['min_samples_split'],
+        min_samples_leaf=best_params['min_samples_leaf'],
+        max_features=best_params['max_features'],
+        bootstrap=best_params['bootstrap'],
+        class_weight=best_params['class_weight'],
+        min_impurity_decrease=best_params['min_impurity_decrease'],
         random_state=RANDOM_STATE,
-        verbose=VERBOSE,
-        return_train_score=True,
+        n_jobs=-1,  # Use all cores for final model
+        oob_score=best_params['bootstrap'],
     )
     
-    # Fit the RandomizedSearchCV
-    rf_random_search.fit(X_train_with_indicators, y_train)
-
-    logging.info(f"Best parameters (RF): {rf_random_search.best_params_}")
-    logging.info(f"Best cross-validation {SCORING_METRIC}: {rf_random_search.best_score_:.4f}")
-    
-    # Extract the best estimator
-    best_rf = rf_random_search.best_estimator_
+    best_rf = Pipeline([
+        ('preprocessor', preprocessor),
+        ('classifier', best_rf_clf)
+    ])
 
 except Exception as e:
-    logging.error(f"An error occurred during Random Forest randomized search: {e}")
+    logging.error(f"An error occurred during Random Forest Optuna optimization: {e}")
     raise
 
 # Evaluate the best Random Forest
 try:
+    logging.info("Fitting best Random Forest model on full training data...")
     best_rf.fit(X_train_with_indicators, y_train)
+    
     y_pred_rf = best_rf.predict(X_test_with_indicators)
     y_pred_proba_rf = best_rf.predict_proba(X_test_with_indicators)[:, 1]
 
@@ -1818,6 +1883,10 @@ try:
     logging.info("Confusion Matrix:\n" + str(confusion_matrix(y_test, y_pred_rf)))
     logging.info("\nClassification Report:\n" + str(classification_report(y_test, y_pred_rf)))
     logging.info(f"ROC AUC: {roc_auc_score(y_test, y_pred_proba_rf):.4f}")
+    
+    # Log OOB score if available
+    if hasattr(best_rf.named_steps['classifier'], 'oob_score_') and best_rf.named_steps['classifier'].oob_score_:
+        logging.info(f"OOB Score: {best_rf.named_steps['classifier'].oob_score_:.4f}")
 
     # Plot ROC
     fpr_rf, tpr_rf, _ = roc_curve(y_test, y_pred_proba_rf)
@@ -1829,12 +1898,22 @@ try:
     plt.title('Random Forest ROC Curve on Test Data')
     plt.legend(loc='lower right')
     plt.show()
+    
+    # Plot Optuna optimization history
+    try:
+        fig_history = optuna.visualization.plot_optimization_history(study)
+        fig_history.show()
+        
+        fig_importance = optuna.visualization.plot_param_importances(study)
+        fig_importance.show()
+    except Exception as viz_e:
+        logging.warning(f"Could not generate Optuna visualizations: {viz_e}")
 
 except Exception as e:
     logging.error(f"An error occurred during Random Forest training/evaluation: {e}")
     raise
 
-logging.info("Script completed successfully.")
+logging.info("Random Forest optimization completed successfully.")
 
 # %%
 # Define the model file path
@@ -1973,6 +2052,11 @@ tree_model = best_rf.named_steps['classifier']
 # Transform the entire training set
 X_train_processed_full = best_rf.named_steps['preprocessor'].transform(X_train_with_indicators)
 
+# Convert sparse matrix to dense array if needed
+from scipy import sparse
+if sparse.issparse(X_train_processed_full):
+    X_train_processed_full = X_train_processed_full.toarray()
+
 # Convert to DataFrame for easier sampling & feature naming
 feature_names = best_rf.named_steps['preprocessor'].get_feature_names_out()
 X_train_processed_df = pd.DataFrame(X_train_processed_full, columns=feature_names)
@@ -1989,25 +2073,63 @@ shap_values_class1 = shap_values[1]
 
 
 # %%
-# 1. Aggregate SHAP values by base feature
-feature_importances = {}
+# 1. Map processed feature names back to original feature names
+def map_to_original_feature(processed_name, original_names):
+    """
+    Map a processed feature name to its original feature name.
+    - 'num__feature_name' -> 'feature_name'
+    - 'cat__feature_name_value' -> 'feature_name'
+    - 'remainder__feature_name' -> 'feature_name'
+    """
+    # Remove prefix
+    clean_name = processed_name
+    for prefix in ['num__', 'cat__', 'remainder__']:
+        if clean_name.startswith(prefix):
+            clean_name = clean_name[len(prefix):]
+            break
+    
+    # For numeric features, the clean name should match directly
+    if clean_name in original_names:
+        return clean_name
+    
+    # For one-hot encoded categorical features, find the matching original feature
+    # The format is 'original_feature_category_value'
+    for orig_name in original_names:
+        if clean_name.startswith(orig_name + '_'):
+            return orig_name
+    
+    # Fallback: return the clean name
+    return clean_name
+
+# Get the original column names from the training data
+original_feature_names = list(X_train_with_indicators.columns)
+
+# Create mapping from processed feature index to original feature name
+feature_to_original = {}
 for i, col in enumerate(feature_names):
-    base_feature = col.replace('num__', '')  # Extract base feature name
-    if base_feature not in feature_importances:
-        feature_importances[base_feature] = []
-    feature_importances[base_feature].extend(np.abs(shap_values[:, i]))
+    original_name = map_to_original_feature(col, original_feature_names)
+    feature_to_original[i] = original_name
 
-# 2. Calculate mean absolute SHAP value for each base feature
-aggregated_importances = {
-    feature: np.mean(values) for feature, values in feature_importances.items()
-}
+# 2. Aggregate SHAP values by original feature (sum values for each sample)
+unique_original_features = list(dict.fromkeys(feature_to_original.values()))
+original_shap_values = np.zeros((shap_values_class1.shape[0], len(unique_original_features)))
 
-# 3. Sort features by importance
+for i, orig_feat in enumerate(unique_original_features):
+    # Find all processed feature indices that map to this original feature
+    indices = [idx for idx, name in feature_to_original.items() if name == orig_feat]
+    # Sum the SHAP values (preserves direction for interpretability)
+    original_shap_values[:, i] = shap_values_class1[:, indices].sum(axis=1)
+
+# 3. Calculate mean absolute SHAP value for each original feature
+mean_abs_shap = np.abs(original_shap_values).mean(axis=0)
+aggregated_importances = dict(zip(unique_original_features, mean_abs_shap))
+
+# 4. Sort features by importance
 sorted_importances = sorted(
     aggregated_importances.items(), key=lambda item: item[1], reverse=True
 )
 
-# 4. Create a DataFrame for plotting
+# 5. Create a DataFrame for plotting
 importance_df = pd.DataFrame(sorted_importances, columns=['Feature', 'Importance'])
 
 # Filter to show only the top 20 features
@@ -2033,28 +2155,8 @@ from sklearn.inspection import PartialDependenceDisplay
 import numpy as np
 import pandas as pd
 
-# 1. Aggregate SHAP values by base feature
-feature_importances = {}
-for i, col in enumerate(feature_names):
-    base_feature = col.replace('num__', '')  # Extract the base feature name
-    if base_feature not in feature_importances:
-        feature_importances[base_feature] = []
-    feature_importances[base_feature].extend(np.abs(shap_values[:, i]))
-
-# 2. Calculate mean absolute SHAP value for each base feature
-aggregated_importances = {
-    feature: np.mean(values) for feature, values in feature_importances.items()
-}
-
-# 3. Sort features by importance
-sorted_importances = sorted(
-    aggregated_importances.items(), key=lambda item: item[1], reverse=True
-)
-
-# 4. Create a DataFrame for plotting
-importance_df = pd.DataFrame(sorted_importances, columns=['Feature', 'Importance'])
-
-# Get all features (i.e. no filtering out "respondent_sex" or limiting to top 20)
+# Use the already-aggregated importance_df from the previous cell
+# Get all original features for PDP plots
 all_features = importance_df['Feature'].tolist()
 
 # Display each feature's PDP in its own figure

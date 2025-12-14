@@ -188,7 +188,8 @@ for k in thresholds:
     X_test_top = X_test_scaled[:, top_indices]
 
     # Fit logistic regression
-    lr = LogisticRegression(penalty='l2', C=1.0, random_state=RANDOM_STATE, max_iter=1000)
+    # scikit-learn >= 1.8: `penalty` is deprecated; default is L2 regularization.
+    lr = LogisticRegression(C=1.0, random_state=RANDOM_STATE, max_iter=1000)
     lr.fit(X_train_top, y_train)
 
     y_pred = lr.predict_proba(X_test_top)[:, 1]
@@ -264,7 +265,8 @@ for i in range(n_splits):
     X_test_scaled = scaler.transform(X_test)
 
     # Fit model
-    lr = LogisticRegression(penalty='l2', C=1.0, random_state=RANDOM_STATE, max_iter=1000)
+    # scikit-learn >= 1.8: `penalty` is deprecated; default is L2 regularization.
+    lr = LogisticRegression(C=1.0, random_state=RANDOM_STATE, max_iter=1000)
     lr.fit(X_train_scaled, y_train)
 
     y_pred = lr.predict_proba(X_test_scaled)[:, 1]

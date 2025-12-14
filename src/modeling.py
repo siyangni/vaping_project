@@ -61,8 +61,9 @@ def get_classifier_configs() -> Dict:
     configs = {
         'LogisticRegression': {
             'estimator': LogisticRegression(
-                penalty='l1',
-                solver='liblinear',
+                # scikit-learn >= 1.8: `penalty` is deprecated; express L1 via l1_ratio=1 with saga.
+                solver='saga',
+                l1_ratio=1.0,
                 max_iter=1000,
                 random_state=RANDOM_STATE
             ),

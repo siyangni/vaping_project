@@ -187,7 +187,8 @@ models = {}
 
 # Logistic Regression (Lasso)
 print("\n[1/5] Training Logistic Regression (Lasso)...")
-lr = LogisticRegression(penalty='l1', solver='liblinear', C=0.1,
+# scikit-learn >= 1.8: `penalty` is deprecated; express L1 via l1_ratio=1 with saga.
+lr = LogisticRegression(solver='saga', l1_ratio=1.0, C=0.1,
                         random_state=RANDOM_STATE, max_iter=1000)
 lr.fit(X_train_scaled, y_train)
 models['Lasso'] = lr
