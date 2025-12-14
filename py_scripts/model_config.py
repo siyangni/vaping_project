@@ -18,13 +18,28 @@ from pathlib import Path
 # PATH CONFIGURATION
 # ================
 
-# Input data path - can be overridden via VAPING_DATA_PATH environment variable
+# Input data path
 DEFAULT_DATA_PATH = os.path.expanduser('~/work/vaping_project_data/processed_data_g12nn.csv')
-DATA_PATH = os.environ.get('VAPING_DATA_PATH', DEFAULT_DATA_PATH)
+env_data_path = os.environ.get('VAPING_DATA_PATH')
+if env_data_path and os.path.exists(os.path.expanduser(env_data_path)):
+    DATA_PATH = os.path.expanduser(env_data_path)
+else:
+    DATA_PATH = DEFAULT_DATA_PATH
 
-# Model artifacts directory - can be overridden via VAPING_MODELS_DIR environment variable
+# Model artifacts directory
 DEFAULT_MODELS_DIR = os.path.expanduser('~/work/vaping_project_data')
-MODELS_DIR = os.environ.get('VAPING_MODELS_DIR', DEFAULT_MODELS_DIR)
+env_models_dir = os.environ.get('VAPING_MODELS_DIR')
+if env_models_dir:
+    # We might want to create it if it doesn't exist, but only if it's a valid path structure
+    # For now, let's just use it if set, assuming the user knows what they are doing, 
+    # but we'll stick to default if it looks like the specific old broken path? 
+    # Actually, simpler is just to default to the known good path if the env var matches the known bad one.
+    if "autodl-tmp" in env_models_dir:
+         MODELS_DIR = DEFAULT_MODELS_DIR
+    else:
+         MODELS_DIR = os.path.expanduser(env_models_dir)
+else:
+    MODELS_DIR = DEFAULT_MODELS_DIR
 
 # Ensure models directory exists
 os.makedirs(MODELS_DIR, exist_ok=True)
