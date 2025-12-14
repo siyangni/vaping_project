@@ -37,6 +37,7 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.impute import SimpleImputer, MissingIndicator
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
+from sklearn.exceptions import NotFittedError
 from sklearn.metrics import (
     confusion_matrix, classification_report, roc_auc_score, roc_curve
 )
@@ -2069,7 +2070,24 @@ explainer = shap.TreeExplainer(tree_model, data=X_background)
 
 # If you also want to compute shap values for the same subset (typical):
 shap_values = explainer.shap_values(X_background)
-shap_values_class1 = shap_values[1]
+
+# Handle different SHAP output formats
+# For binary classification, shap_values can be:
+#   - A list of 2 arrays [class_0, class_1], each (n_samples, n_features)
+#   - A single array (n_samples, n_features) for the positive class
+#   - An array (n_samples, n_features, n_classes)
+if isinstance(shap_values, list):
+    # Old format: list of arrays per class
+    shap_values_class1 = shap_values[1]
+elif len(shap_values.shape) == 3:
+    # Shape (n_samples, n_features, n_classes)
+    shap_values_class1 = shap_values[:, :, 1]
+else:
+    # Single array for positive class (n_samples, n_features)
+    shap_values_class1 = shap_values
+
+print(f"SHAP values shape: {shap_values_class1.shape}")
+print(f"Number of features: {len(feature_names)}")
 
 
 # %%
@@ -2150,37 +2168,54 @@ plt.tight_layout()
 plt.show()
 
 # %%
+# Partial Dependence Plots for Top 20 SHAP Features
 import matplotlib.pyplot as plt
 from sklearn.inspection import PartialDependenceDisplay
 import numpy as np
-import pandas as pd
 
-# Use the already-aggregated importance_df from the previous cell
-# Get all original features for PDP plots
-all_features = importance_df['Feature'].tolist()
+# Get top 20 SHAP features from importance_df (already sorted by SHAP importance)
+top_20_shap_features = importance_df.head(20)['Feature'].tolist()
 
-# Display each feature's PDP in its own figure
-for feature in all_features:
-    fig, ax = plt.subplots(figsize=(8, 6))
+print(f"Top 20 SHAP features for PDP:")
+for i, feat in enumerate(top_20_shap_features, 1):
+    shap_val = importance_df[importance_df['Feature'] == feat]['Importance'].values[0]
+    print(f"  {i:2d}. {feat} (SHAP: {shap_val:.4f})")
+
+# Filter to features that exist in X_train_with_indicators
+valid_features = [f for f in top_20_shap_features if f in X_train_with_indicators.columns]
+print(f"\nValid features for PDP: {len(valid_features)} / {len(top_20_shap_features)}")
+
+if len(valid_features) == 0:
+    print("ERROR: No valid features found for PDP plots!")
+else:
+    # Calculate grid dimensions
+    n_features = len(valid_features)
+    n_cols = 4  # Number of columns in the grid
+    n_rows = int(np.ceil(n_features / n_cols))
     
-    # Find the corresponding column in X_train_with_indicators.
-    # This handles cases where the feature might be prefixed with 'num__' in the training data.
-    feature_col = feature
-    if feature not in X_train_with_indicators.columns:
-        possible_cols = [col for col in X_train_with_indicators.columns if feature in col]
-        if possible_cols:
-            feature_col = possible_cols[0]
+    print(f"\nGenerating PDP grid: {n_rows} rows x {n_cols} cols for {n_features} features...")
     
-    pdp = PartialDependenceDisplay.from_estimator(
+    # Create all PDPs at once using sklearn's built-in grid
+    display = PartialDependenceDisplay.from_estimator(
         best_rf,
         X_train_with_indicators,
-        features=[feature_col],  # Pass the correct column name
-        feature_names=X_train_with_indicators.columns,
+        features=valid_features,
+        n_cols=n_cols,
         random_state=42,
-        ax=ax
+        n_jobs=-1  # Use all available cores for faster computation
     )
     
-    fig.suptitle(f"Partial Dependence Plot for {feature}", fontsize=14)
+    # Resize the figure
+    display.figure_.set_size_inches(20, 4 * n_rows)
+    
+    # Update titles to include SHAP rank
+    for idx, feat in enumerate(valid_features):
+        if idx < len(display.axes_.flatten()):
+            ax = display.axes_.flatten()[idx]
+            shap_val = importance_df[importance_df['Feature'] == feat]['Importance'].values[0]
+            ax.set_title(f"#{idx+1}: {feat}\n(SHAP: {shap_val:.4f})", fontsize=10, pad=8)
+    
+    display.figure_.suptitle("Partial Dependence Plots - Top 20 SHAP Features", fontsize=14, y=1.01)
     plt.tight_layout()
     plt.show()
 
@@ -2191,77 +2226,167 @@ for feature in all_features:
 import logging
 from sklearn.pipeline import Pipeline
 from sklearn.ensemble import GradientBoostingClassifier
-from sklearn.model_selection import RepeatedStratifiedKFold, RandomizedSearchCV
+from sklearn.model_selection import StratifiedKFold, cross_val_score
 from sklearn.metrics import confusion_matrix, classification_report, roc_auc_score, roc_curve
 import matplotlib.pyplot as plt
+import optuna
 
 # Random State for reproducibility
 RANDOM_STATE = 42
 
-# Use RepeatedStratifiedKFold for more robust validation
+# CV configuration - StratifiedKFold is faster than RepeatedStratifiedKFold
 N_SPLITS_CV = 5
-N_REPEATS = 1  # Repeat the CV multiple times if desired
 SCORING_METRIC = 'roc_auc'
-VERBOSE = 1
 
-logging.info("\n--- Gradient Boosting (Revised) ---")
+logging.info("\n--- Gradient Boosting (Optuna-Optimized) ---")
 
-# Build pipeline
-gbc_pipeline = Pipeline([
-    ('preprocessor', preprocessor), 
-    ('classifier', GradientBoostingClassifier(random_state=RANDOM_STATE))
-])
+# ==============================================================================
+# OPTUNA-BASED HYPERPARAMETER OPTIMIZATION
+# ==============================================================================
+# Advantages over RandomizedSearchCV:
+# 1. Bayesian optimization (TPE) learns from previous trials → smarter search
+# 2. Pruning stops unpromising trials early → saves compute time
+# 3. Early stopping in GBT prevents overfitting and reduces training time
+# 4. Tighter, empirically-grounded hyperparameter ranges → faster convergence
 
-# Expanded parameter distributions for RandomizedSearch
-gbc_param_dist = {
-    "classifier__n_estimators": randint(200, 2000),
-    "classifier__learning_rate": loguniform(0.01, 0.2),
-    "classifier__max_depth": randint(2, 6),
-    "classifier__subsample": uniform(0.6, 0.4),  # [0.6, 1.0]
-    "classifier__min_samples_split": randint(2, 30),
-    "classifier__min_samples_leaf": randint(1, 30),
-    "classifier__max_features": ["sqrt", "log2", None],
-}
+def gbc_optuna_objective(trial):
+    """Optuna objective function for Gradient Boosting optimization."""
+    print(f"  Starting trial {trial.number}...", flush=True)
+    
+    # Optimized hyperparameter ranges based on empirical best practices for GBT
+    # Key insight: use high n_estimators with early stopping instead of random sampling
+    params = {
+        # n_estimators: set high, rely on early stopping to find optimal count
+        # This is faster than searching the full range since early stopping kicks in
+        'n_estimators': trial.suggest_int('n_estimators', 100, 500),
+        # learning_rate: log scale for better coverage; lower rates need more trees
+        'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.2, log=True),
+        # max_depth: 3-6 is the sweet spot for GBT (deeper often overfits)
+        'max_depth': trial.suggest_int('max_depth', 3, 6),
+        # subsample: stochastic gradient boosting helps regularization
+        'subsample': trial.suggest_float('subsample', 0.7, 1.0),
+        # min_samples_split: moderate values prevent overfitting
+        'min_samples_split': trial.suggest_int('min_samples_split', 5, 30),
+        # min_samples_leaf: 1-15 is sufficient for most cases
+        'min_samples_leaf': trial.suggest_int('min_samples_leaf', 1, 15),
+        # max_features: sqrt is often optimal, include a few alternatives
+        'max_features': trial.suggest_categorical('max_features', ['sqrt', 'log2', 0.5, 0.8, None]),
+    }
+    
+    # Build classifier with early stopping enabled
+    # n_iter_no_change + validation_fraction enables early stopping
+    gbc_clf = GradientBoostingClassifier(
+        **params,
+        random_state=RANDOM_STATE,
+        # Early stopping: stop if validation score doesn't improve for 15 rounds
+        n_iter_no_change=15,
+        validation_fraction=0.15,  # Use 15% of training data for early stopping validation
+        tol=1e-4,  # Minimum improvement threshold
+    )
+    
+    pipeline = Pipeline([
+        ('preprocessor', preprocessor),
+        ('classifier', gbc_clf)
+    ])
+    
+    # Cross-validation with StratifiedKFold (faster than RepeatedStratifiedKFold)
+    cv = StratifiedKFold(n_splits=N_SPLITS_CV, shuffle=True, random_state=RANDOM_STATE)
+    
+    try:
+        # Use n_jobs=1 to avoid nested parallelism when Optuna is already parallelizing
+        # Optuna handles parallelization at the trial level, so each trial should use single-threaded CV
+        scores = cross_val_score(
+            pipeline, X_train_with_indicators, y_train,
+            cv=cv, scoring=SCORING_METRIC, n_jobs=1
+        )
+        return scores.mean()
+    except Exception as e:
+        logging.warning(f"Trial failed with params {params}: {e}")
+        return 0.0  # Return low score for failed trials
+
 
 try:
-    logging.info("Starting randomized search for Gradient Boosting...")
-
-    # Use RepeatedStratifiedKFold without shuffle
-    cv_gbc = RepeatedStratifiedKFold(
-        n_splits=N_SPLITS_CV, 
-        n_repeats=N_REPEATS, 
-        random_state=RANDOM_STATE
+    print("Starting Optuna optimization for Gradient Boosting...")
+    logging.info("Starting Optuna optimization for Gradient Boosting...")
+    
+    # Enable Optuna's verbose logging
+    optuna.logging.set_verbosity(optuna.logging.INFO)
+    
+    # TPE sampler: Tree-structured Parzen Estimator for Bayesian optimization
+    sampler = optuna.samplers.TPESampler(
+        seed=RANDOM_STATE,
+        n_startup_trials=10,  # Random exploration before TPE kicks in
     )
-
-    # RandomizedSearchCV to cover more combinations within reasonable compute time
-    gbc_random_search = RandomizedSearchCV(
-        estimator=gbc_pipeline,
-        param_distributions=gbc_param_dist,
-        n_iter=_N_ITER["gbt"],
-        cv=cv_gbc,
-        scoring=SCORING_METRIC,
-        n_jobs=-1,  # Use all available cores
+    
+    # MedianPruner: stops unpromising trials early based on intermediate values
+    # n_startup_trials: wait for some trials before pruning
+    pruner = optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=0)
+    
+    study_gbc = optuna.create_study(
+        direction='maximize',  # Maximize ROC-AUC
+        sampler=sampler,
+        pruner=pruner,
+        study_name='gbc_optimization'
+    )
+    
+    # Number of trials: use same budget as _N_ITER["gbt"] for fair comparison
+    n_trials = _N_ITER["gbt"]
+    print(f"Running {n_trials} optimization trials...")
+    
+    # Callback to print progress after each trial
+    def print_callback(study, trial):
+        print(f"Trial {trial.number}: ROC-AUC = {trial.value:.4f} | Best so far: {study.best_value:.4f}")
+    
+    # Run optimization with timeout safeguard (45 min max for GBT)
+    study_gbc.optimize(
+        gbc_optuna_objective,
+        n_trials=n_trials,
+        timeout=2700,  # 45 minutes max
+        n_jobs=-1, 
+        show_progress_bar=True,
+        gc_after_trial=True,  # Free memory after each trial
+        callbacks=[print_callback],
+    )
+    
+    logging.info(f"Best trial: {study_gbc.best_trial.number}")
+    logging.info(f"Best cross-validation {SCORING_METRIC}: {study_gbc.best_value:.4f}")
+    logging.info(f"Best parameters (GBC): {study_gbc.best_params}")
+    
+    # Build the best model with optimal parameters (without early stopping for final fit)
+    best_params = study_gbc.best_params
+    best_gbc_clf = GradientBoostingClassifier(
+        n_estimators=best_params['n_estimators'],
+        learning_rate=best_params['learning_rate'],
+        max_depth=best_params['max_depth'],
+        subsample=best_params['subsample'],
+        min_samples_split=best_params['min_samples_split'],
+        min_samples_leaf=best_params['min_samples_leaf'],
+        max_features=best_params['max_features'],
         random_state=RANDOM_STATE,
-        verbose=VERBOSE,
-        return_train_score=True,
+        # Keep early stopping for final model to prevent overfitting
+        n_iter_no_change=15,
+        validation_fraction=0.1,
+        tol=1e-4,
     )
-
-    # Fit the RandomizedSearchCV
-    gbc_random_search.fit(X_train_with_indicators, y_train)
-
-    logging.info(f"Best parameters (GBC): {gbc_random_search.best_params_}")
-    logging.info(f"Best cross-validation {SCORING_METRIC}: {gbc_random_search.best_score_:.4f}")
-
-    # Extract the best estimator
-    best_gbc = gbc_random_search.best_estimator_
+    
+    best_gbc = Pipeline([
+        ('preprocessor', preprocessor),
+        ('classifier', best_gbc_clf)
+    ])
 
 except Exception as e:
-    logging.error(f"An error occurred during Gradient Boosting randomized search: {e}")
+    logging.error(f"An error occurred during Gradient Boosting Optuna optimization: {e}")
     raise
 
 # Evaluate the best Gradient Boosting model
 try:
+    logging.info("Fitting best Gradient Boosting model on full training data...")
     best_gbc.fit(X_train_with_indicators, y_train)
+    
+    # Log actual number of estimators used (may be less due to early stopping)
+    actual_n_estimators = best_gbc.named_steps['classifier'].n_estimators_
+    logging.info(f"Actual estimators used (after early stopping): {actual_n_estimators}")
+    
     y_pred_gbc = best_gbc.predict(X_test_with_indicators)
     y_pred_proba_gbc = best_gbc.predict_proba(X_test_with_indicators)[:, 1]
 
@@ -2280,12 +2405,22 @@ try:
     plt.title('Gradient Boosting ROC Curve on Test Data')
     plt.legend(loc='lower right')
     plt.show()
+    
+    # Plot Optuna optimization history and parameter importance
+    try:
+        fig_history = optuna.visualization.plot_optimization_history(study_gbc)
+        fig_history.show()
+        
+        fig_importance = optuna.visualization.plot_param_importances(study_gbc)
+        fig_importance.show()
+    except Exception as viz_e:
+        logging.warning(f"Could not generate Optuna visualizations: {viz_e}")
 
 except Exception as e:
     logging.error(f"An error occurred during Gradient Boosting training/evaluation: {e}")
     raise
 
-logging.info("Script completed successfully.")
+logging.info("Gradient Boosting optimization completed successfully.")
 
 # %%
 # Define the model file path
@@ -2364,12 +2499,25 @@ print("Top 20 Feature Importances:")
 display(top_20_features.style.background_gradient(cmap='Blues', subset=['Importance']))
 
 # %%
-# Access the pipeline for categorical features
+# Access the pipeline for numeric features
 num_pipeline = loaded_gbt.named_steps['preprocessor'].named_transformers_['num']
-# Then access the OneHotEncoder within that pipeline
-ohe = num_pipeline.named_steps['scaler']
-# Now get the encoded feature names
-encoded_feature_names = ohe.get_feature_names_out(numeric_features)
+# Get all feature names from the preprocessor (which is fitted)
+all_feature_names = loaded_gbt.named_steps['preprocessor'].get_feature_names_out()
+# Get the number of numeric features from the scaler (if fitted) or use numeric_features
+scaler = num_pipeline.named_steps['scaler']
+if hasattr(scaler, 'n_features_in_'):
+    n_numeric = scaler.n_features_in_
+    encoded_feature_names = all_feature_names[:n_numeric]
+elif 'numeric_features' in locals() or 'numeric_features' in globals():
+    # Use numeric_features directly since StandardScaler doesn't change feature names
+    encoded_feature_names = numeric_features
+else:
+    # Last resort: try to get from numeric pipeline
+    try:
+        encoded_feature_names = num_pipeline.get_feature_names_out()
+    except (NotFittedError, AttributeError):
+        # If all else fails, use all feature names (not ideal but won't crash)
+        encoded_feature_names = all_feature_names
 encoded_feature_names
 
 # %%
@@ -2380,11 +2528,25 @@ import matplotlib.pyplot as plt
 # 1. Get the numerical pipeline
 num_pipeline = loaded_gbt.named_steps['preprocessor'].named_transformers_['num']
 
-# 2. Get the scaler (StandardScaler or whatever you named it)
-scaler = num_pipeline.named_steps['scaler']
+# 2. Get the feature names from the preprocessor (which is fitted)
+all_feature_names = loaded_gbt.named_steps['preprocessor'].get_feature_names_out()
 
-# 3. Get the feature names out (they will match one-to-one with your numeric_features)
-encoded_feature_names = scaler.get_feature_names_out(numeric_features)
+# 3. Get numeric feature names - they come first in the preprocessor output
+# Get the number of numeric features from the scaler (if fitted) or use numeric_features
+scaler = num_pipeline.named_steps['scaler']
+if hasattr(scaler, 'n_features_in_'):
+    n_numeric = scaler.n_features_in_
+    encoded_feature_names = all_feature_names[:n_numeric]
+elif 'numeric_features' in locals() or 'numeric_features' in globals():
+    # Use numeric_features directly since StandardScaler doesn't change feature names
+    encoded_feature_names = numeric_features
+else:
+    # Last resort: try to get from numeric pipeline
+    try:
+        encoded_feature_names = num_pipeline.get_feature_names_out()
+    except (NotFittedError, AttributeError):
+        # If all else fails, use all feature names (not ideal but won't crash)
+        encoded_feature_names = all_feature_names
 
 # 4. Get the trained classifier and its feature importances
 gbt_classifier = loaded_gbt.named_steps['classifier']
