@@ -555,10 +555,12 @@ def rf_optuna_objective(trial):
         'min_impurity_decrease': trial.suggest_float('min_impurity_decrease', 0.0, 0.01),
     }
     
+    # Random Forest supports internal parallelism, so we let it use all cores (n_jobs=-1)
+    # and keep the CV loop sequential (n_jobs=1).
     rf_clf = RandomForestClassifier(
         **params,
         random_state=RANDOM_STATE,
-        n_jobs=1, # PREVENT NESTED PARALLELISM: Outer loop is already parallel
+        n_jobs=-1, 
         oob_score=params['bootstrap'],
     )
     
@@ -624,7 +626,7 @@ try:
         class_weight=best_params_rf['class_weight'],
         min_impurity_decrease=best_params_rf['min_impurity_decrease'],
         random_state=RANDOM_STATE,
-        n_jobs=1, # PREVENT NESTED PARALLELISM
+        n_jobs=-1,
         oob_score=best_params_rf['bootstrap'],
     )
     
@@ -686,9 +688,11 @@ def gbt_optuna_objective(trial):
     cv_gbt = StratifiedKFold(n_splits=N_SPLITS_CV, shuffle=True, random_state=RANDOM_STATE)
     
     try:
+        # GBT is sequentially built, so we parallelize the Cross-Validation folds instead.
+        # This will train 5 folds in parallel.
         scores = cross_val_score(
             pipeline, X_train_with_indicators, y_train,
-            cv=cv_gbt, scoring=SCORING_METRIC, n_jobs=1
+            cv=cv_gbt, scoring=SCORING_METRIC, n_jobs=-1
         )
         return scores.mean()
     except Exception as e:
@@ -840,7 +844,7 @@ def xgb_optuna_objective(trial):
     xgb_clf = XGBClassifier(
         **params,
         random_state=RANDOM_STATE,
-        n_jobs=1, # PREVENT NESTED PARALLELISM
+        n_jobs=-1, # Use all cores for tree building
         eval_metric='logloss',
     )
     
@@ -852,6 +856,7 @@ def xgb_optuna_objective(trial):
     cv_xgb = StratifiedKFold(n_splits=N_SPLITS_CV, shuffle= True, random_state=RANDOM_STATE)
     
     try:
+        # Keep CV sequential (n_jobs=1) because XGBoost is using all cores internally
         scores = cross_val_score(
             pipeline, X_train_with_indicators, y_train,
             cv=cv_xgb, scoring=SCORING_METRIC, n_jobs=1
@@ -884,7 +889,7 @@ try:
             reg_alpha=best_params_xgb['reg_alpha'],
             reg_lambda=best_params_xgb['reg_lambda'],
             random_state=RANDOM_STATE,
-            n_jobs=1, # PREVENT NESTED PARALLELISM
+            n_jobs=-1,
             eval_metric='logloss',
         ))
     ])
@@ -925,7 +930,7 @@ def catboost_optuna_objective(trial):
         random_state=RANDOM_STATE,
         verbose=0,
         task_type='CPU',
-        thread_count=1, # PREVENT NESTED PARALLELISM
+        thread_count=-1, # Use all available threads
     )
     
     pipeline = Pipeline([
@@ -936,6 +941,7 @@ def catboost_optuna_objective(trial):
     cv_cb = StratifiedKFold(n_splits=N_SPLITS_CV, shuffle=True, random_state=RANDOM_STATE)
     
     try:
+        # Keep CV sequential since CatBoost uses all threads
         scores = cross_val_score(
             pipeline, X_train_with_indicators, y_train,
             cv=cv_cb, scoring=SCORING_METRIC, n_jobs=1
@@ -967,7 +973,7 @@ try:
             random_state=RANDOM_STATE,
             verbose=0,
             task_type='CPU',
-            thread_count=1, # PREVENT NESTED PARALLELISM
+            thread_count=-1,
         ))
     ])
     
