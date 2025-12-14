@@ -36,7 +36,7 @@ from sklearn.metrics import (
 )
 from sklearn.ensemble import (
     RandomForestClassifier, GradientBoostingClassifier, 
-    HistGradientBoostingClassifier 
+    HistGradientBoostingClassifier, StackingClassifier
 )
 from sklearn.linear_model import LogisticRegression
 from xgboost import XGBClassifier
@@ -992,6 +992,48 @@ except Exception as e:
 
 # %%
 # ================
+# 5.8 STACKING CLASSIFIER
+# ================
+
+logging.info("\n--- Stacking Classifier (Ensemble) ---")
+
+# Define base learners using the best pipelines found above
+# Note: We use the full pipelines so they can handle the raw feature set independently
+estimators_list = [
+    ('en', best_elasticnet_model),
+    ('en_2way', best_model_2way_interactions),
+    ('rf', best_rf),
+    ('hgbt', best_hgbt),
+    ('xgb', best_xgb),
+    ('cb', best_cb),
+    # We include GBC as well for diversity, though it is slower to train
+    ('gbt', best_gbc),
+]
+
+logging.info("Initializing Stacking Classifier...")
+logging.info(f"Base models: {[name for name, _ in estimators_list]}")
+
+# We keep n_jobs=1 because the base learners (RF, XGB, CB) are already using all 24 cores.
+# Parallelizing the stack would cause massive oversubscription and potential crashes.
+stacking_clf = StackingClassifier(
+    estimators=estimators_list,
+    final_estimator=LogisticRegression(random_state=RANDOM_STATE),
+    cv=N_SPLITS_CV, 
+    n_jobs=1, 
+    passthrough=False
+)
+
+train_and_save_model(
+    model=stacking_clf,
+    model_name="stacking",
+    X_train=X_train_with_indicators,
+    y_train=y_train,
+    X_test=X_test_with_indicators,
+    y_test=y_test
+)
+
+# %%
+# ================
 # 6. TRAINING SUMMARY
 # ================
 
@@ -1000,7 +1042,7 @@ logging.info("TRAINING COMPLETE")
 logging.info("="*70)
 logging.info(f"All models saved to: {MODELS_DIR}")
 logging.info("Trained models:")
-for model_name in ["elasticnet", "elasticnet_2way", "rf", "gbt", "hgbt", "xgb", "cb"]:
+for model_name in ["elasticnet", "elasticnet_2way", "rf", "gbt", "hgbt", "xgb", "cb", "stacking"]:
     path = get_model_path(model_name)
     if os.path.exists(path):
         logging.info(f"  ✓ {model_name}: {path}")

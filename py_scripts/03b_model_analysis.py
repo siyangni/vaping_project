@@ -407,6 +407,70 @@ def compute_shap_for_tree_model(model, X_data, model_name: str, n_samples: int =
         logging.error(f"SHAP computation failed for {model_name}: {e}")
 
 
+def plot_stacking_importance(model, X_test, y_test, model_name: str = "Stacking Classifier"):
+    """
+    Plot importance of base models in the stack using Permutation Importance.
+    Arguments for the meta-learner are usually coefficients, but permutation importance
+    on the *meta-model* (not the whole stack) is cleaner to see which base learner matters.
+    But since sklearn StackingClassifier makes accessing internal cross-val predictions hard,
+    we run permutation importance on the *whole stack* by shuffling each base model's predictions?
+    
+    Actually, simpler: Inspect the coefficients of the final_estimator (LogisticRegression).
+    """
+    if not hasattr(model, 'final_estimator_'):
+        logging.warning(f"{model_name} is not fitted or has no final_estimator_")
+        return
+
+    meta_learner = model.final_estimator_
+    
+    # Check if meta-learner is linear (LogisticRegression)
+    if hasattr(meta_learner, 'coef_'):
+        coefs = meta_learner.coef_[0] if meta_learner.coef_.ndim > 1 else meta_learner.coef_
+        feature_names = [name for name, _ in model.estimators]
+        
+        # If we have more coefficients than names (e.g. OHE), we have a mismatch,
+        # but StackingClassifier usually passes 1 proba col per estimator (if binary)
+        # or n_classes cols. For binary classification with 'predict_proba', 
+        # normally it passes 1 column per estimator if we set stack_method='predict_proba' 
+        # and drop one. By default it might pass 2 columns (prob class 0, prob class 1) per estimator?
+        # Actually StackingClassifier(passthrough=False) with binary classification 
+        # usually results in 1 feature per estimator if using 'predict_proba' and drop='first'??
+        # Let's just try to map them. If length mismatch, falling back to simple bar plot.
+        
+        if len(coefs) == len(feature_names):
+            importance_df = pd.DataFrame({
+                'Base Model': feature_names,
+                'Meta-Coefficient': coefs,
+                'Abs_Coefficient': np.abs(coefs)
+            }).sort_values('Abs_Coefficient', ascending=True)
+            
+            plt.figure(figsize=(10, 6))
+            colors = ['red' if c < 0 else 'blue' for c in importance_df['Meta-Coefficient']]
+            plt.barh(importance_df['Base Model'], importance_df['Meta-Coefficient'], color=colors)
+            plt.axvline(x=0, color='black',  linestyle='-', linewidth=0.5)
+            plt.title(f"{model_name} - Meta-Model Coefficients (Base Learner Weight)", fontsize=14)
+            plt.xlabel("Coefficient Value (Blue=Positive Contribution, Red=Negative)", fontsize=12)
+            plt.tight_layout()
+            plt.show()
+            return
+
+    # Fallback: Permutation importance on the whole stack (slow but reliable)
+    logging.info("Running permutation importance for Stacking (this finds global feature importance)...")
+    # Note: This finds the importance of *original features* to the *stacked ensemble*
+    result = permutation_importance(model, X_test, y_test, n_repeats=5, random_state=42, n_jobs=1)
+    sorted_idx = result.importances_mean.argsort()[-20:]
+    
+    plt.figure(figsize=(10, 8))
+    plt.boxplot(
+        result.importances[sorted_idx].T,
+        vert=False,
+        labels=X_test.columns[sorted_idx]
+    )
+    plt.title(f"{model_name} - Permutation Importance (Test Set)", fontsize=14)
+    plt.tight_layout()
+    plt.show()
+
+
 # %%
 # ================
 # 5. ELASTIC NET MODEL ANALYSIS
@@ -586,6 +650,27 @@ if cb_model is not None:
 
 # %%
 # ================
+# 12. STACKING CLASSIFIER ANALYSIS
+# ================
+
+logging.info("\n" + "="*70)
+logging.info("STACKING CLASSIFIER ANALYSIS")
+logging.info("="*70)
+
+stacking_model = load_model_safe("stacking")
+if stacking_model is not None:
+    # ROC Curve
+    auc = plot_roc_curve(stacking_model, X_test_with_indicators, y_test, "Stacking Ensemble")
+    logging.info(f"Stacking Ensemble Test ROC-AUC: {auc:.4f}")
+    
+    # Analyze Base Learner Importance (Meta-Learner Coefficients)
+    plot_stacking_importance(stacking_model, X_test_with_indicators, y_test, "Stacking Ensemble")
+    
+    # We skip SHAP for stacking as it is complex and usually effectively proxied by the best single model
+
+
+# %%
+# ================
 # 12. MODEL COMPARISON
 # ================
 
@@ -594,9 +679,10 @@ logging.info("MODEL COMPARISON")
 logging.info("="*70)
 
 # Compare all models on ROC curves in one plot
-model_names = ["elasticnet", "elasticnet_2way", "rf", "gbt", "hgbt", "xgb", "cb"]
-model_labels = ["Elastic Net", "Elastic Net 2-way", "Random Forest", "GBT", "Hist GBT", "XGBoost", "CatBoost"]
-colors = ['blue', 'cyan', 'green', 'orange', 'red', 'purple', 'brown']
+# Compare all models on ROC curves in one plot
+model_names = ["elasticnet", "elasticnet_2way", "rf", "gbt", "hgbt", "xgb", "cb", "stacking"]
+model_labels = ["Elastic Net", "Elastic Net 2-way", "Random Forest", "GBT", "Hist GBT", "XGBoost", "CatBoost", "Stacking"]
+colors = ['blue', 'cyan', 'green', 'orange', 'red', 'purple', 'brown', 'black']
 
 plt.figure(figsize=(10, 8))
 
