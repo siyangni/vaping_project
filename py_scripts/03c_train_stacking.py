@@ -279,7 +279,7 @@ stacking_clf = StackingClassifier(
     estimators=estimators_list,
     final_estimator=LogisticRegression(random_state=RANDOM_STATE),
     cv=N_SPLITS_CV, 
-    n_jobs=1,  # Keep sequential to avoid memory/CPU oversubscription
+    n_jobs=-1,  
     passthrough=False
 )
 
