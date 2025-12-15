@@ -1,9 +1,15 @@
-"""
-Train Stacking Classifier using saved models from sections 5.1-5.7.
+# %%
+# ============================
+#  Title:  Stacking Classifier Training (Interactive)
+#  Author: Siyang Ni
+#  Notes:  This script loads pre-trained base models and creates an ensemble
+#          stacking classifier. Can be run interactively or as a batch script.
+# ============================
 
-This script loads pre-trained base models and creates an ensemble
-stacking classifier on top of them.
-"""
+# %%
+# ================
+# 1. IMPORTS
+# ================
 
 import os
 import sys
@@ -15,6 +21,7 @@ from sklearn.metrics import confusion_matrix, classification_report, roc_auc_sco
 from sklearn.ensemble import StackingClassifier
 from sklearn.linear_model import LogisticRegression
 
+# %%
 # Import shared configuration
 from model_config import (
     MODELS_DIR, 
@@ -24,8 +31,35 @@ from model_config import (
     get_preprocessed_data_path
 )
 
+# Import necessary sklearn components for custom transformer
+from sklearn.base import BaseEstimator, TransformerMixin
+
+
+# %%
 # ================
-# LOGGING SETUP
+# 2. CUSTOM TRANSFORMERS
+# ================
+
+class DenseTransformer(BaseEstimator, TransformerMixin):
+    """
+    Converts sparse matrices to dense arrays.
+    Required for models that don't support sparse input (e.g., HistGradientBoostingClassifier).
+    
+    This class must be defined here to allow proper deserialization of saved HGBT models
+    that include this transformer in their pipeline.
+    """
+    def fit(self, X, y=None):
+        return self
+    
+    def transform(self, X):
+        if hasattr(X, 'toarray'):
+            return X.toarray()
+        return X
+
+
+# %%
+# ================
+# 3. LOGGING SETUP
 # ================
 
 logging.basicConfig(
@@ -37,8 +71,9 @@ logging.basicConfig(
     ]
 )
 
+# %%
 # ================
-# HELPER FUNCTIONS
+# 4. HELPER FUNCTIONS
 # ================
 
 def load_model_with_fallback(model_name: str, fallback_names: list = None):
@@ -117,8 +152,9 @@ def train_and_save_model(model, model_name, X_train, y_train, X_test, y_test):
     return model
 
 
+# %%
 # ================
-# MAIN EXECUTION
+# 5. DATA LOADING
 # ================
 
 if __name__ == "__main__":
@@ -147,7 +183,11 @@ if __name__ == "__main__":
     logging.info(f"  y_train: {y_train.shape}")
     logging.info(f"  y_test: {y_test.shape}")
     
-    # Load base models with fallback naming
+    # %%
+    # ================
+    # 6. LOAD BASE MODELS
+    # ================
+    
     logging.info("\n" + "="*70)
     logging.info("Loading base models...")
     logging.info("="*70)
@@ -186,10 +226,14 @@ if __name__ == "__main__":
     for name in loaded_models.keys():
         logging.info(f"  ✓ {name}")
     
+    # %%
+    # ================
+    # 7. TRAIN STACKING CLASSIFIER
+    # ================
+    
     # Create estimators list for stacking
     estimators_list = [(name, model) for name, model in loaded_models.items()]
     
-    # Train stacking classifier
     logging.info("\n" + "="*70)
     logging.info("TRAINING STACKING CLASSIFIER")
     logging.info("="*70)
