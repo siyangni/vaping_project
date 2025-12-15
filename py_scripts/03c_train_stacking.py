@@ -4,12 +4,26 @@
 #  Author: Siyang Ni
 #  Notes:  This script loads pre-trained base models and creates an ensemble
 #          stacking classifier. Can be run interactively or as a batch script.
+#
+#  USAGE (Interactive):
+#    Run sections in order for first-time setup:
+#      1. Core Imports (optional - provides common imports)
+#      2. Custom Transformers (standalone - includes own imports)
+#      3. Logging Setup (standalone - includes own imports)
+#      4. Helper Functions (requires Section 4 definitions)
+#      5. Data Loading (standalone - includes own imports)
+#      6. Load Base Models (requires Section 5 data and Section 4 functions)
+#      7. Train Stacking (requires Section 6 models and Section 5 data)
+#
+#  USAGE (Batch):
+#    python py_scripts/03c_train_stacking.py
 # ============================
 
 # %%
 # ================
-# 1. IMPORTS
+# 1. CORE IMPORTS
 # ================
+# NOTE: Individual sections re-import dependencies as needed for standalone execution
 
 import os
 import sys
@@ -60,6 +74,11 @@ class DenseTransformer(BaseEstimator, TransformerMixin):
 # ================
 # 3. LOGGING SETUP
 # ================
+
+import os
+import sys
+import logging
+from model_config import MODELS_DIR
 
 logging.basicConfig(
     level=logging.INFO,
@@ -156,114 +175,130 @@ def train_and_save_model(model, model_name, X_train, y_train, X_test, y_test):
 # 5. DATA LOADING
 # ================
 
-if __name__ == "__main__":
-    logging.info("="*70)
-    logging.info("STACKING CLASSIFIER TRAINING")
-    logging.info("="*70)
-    
-    # Load preprocessed data
-    logging.info("\nLoading preprocessed data...")
-    preprocessed_path = get_preprocessed_data_path()
-    
-    if not os.path.exists(preprocessed_path):
-        logging.error(f"Preprocessed data not found at {preprocessed_path}")
-        logging.error("Please run sections 1-4 of 03a_model_training.py first to create preprocessed data.")
-        sys.exit(1)
-    
-    data = joblib.load(preprocessed_path)
-    X_train_with_indicators = data['X_train_with_indicators']
-    X_test_with_indicators = data['X_test_with_indicators']
-    y_train = data['y_train']
-    y_test = data['y_test']
-    
-    logging.info(f"Loaded data shapes:")
-    logging.info(f"  X_train: {X_train_with_indicators.shape}")
-    logging.info(f"  X_test: {X_test_with_indicators.shape}")
-    logging.info(f"  y_train: {y_train.shape}")
-    logging.info(f"  y_test: {y_test.shape}")
-    
-    # %%
-    # ================
-    # 6. LOAD BASE MODELS
-    # ================
-    
-    logging.info("\n" + "="*70)
-    logging.info("Loading base models...")
-    logging.info("="*70)
-    
-    model_mapping = {
-        'elasticnet': ['lasso'],  # Try 'elasticnet', fallback to 'lasso'
-        'elasticnet_2way': ['lasso_2way'],
-        'rf': [],
-        'gbt': [],
-        'hgbt': ['hist_gbt'],  # Try 'hgbt', fallback to 'hist_gbt'
-        'xgb': [],
-        'cb': [],
-    }
-    
-    loaded_models = {}
-    for model_name, fallbacks in model_mapping.items():
-        model = load_model_with_fallback(model_name, fallbacks)
-        if model is not None:
-            loaded_models[model_name] = model
-    
-    # Check if we have enough models
-    if len(loaded_models) < 3:
-        logging.error(f"\nInsufficient models loaded ({len(loaded_models)}/7)")
-        logging.error("Need at least 3 base models to create a stacking classifier.")
-        logging.error("\nAvailable models:")
-        for name in loaded_models.keys():
-            logging.error(f"  ✓ {name}")
-        logging.error("\nMissing models:")
-        for name in model_mapping.keys():
-            if name not in loaded_models:
-                logging.error(f"  ✗ {name}")
-        logging.error("\nPlease run sections 5.1-5.7 of 03a_model_training.py to train the base models.")
-        sys.exit(1)
-    
-    logging.info(f"\nSuccessfully loaded {len(loaded_models)}/7 base models:")
+import os
+import sys
+import joblib
+import logging
+from model_config import get_preprocessed_data_path
+
+logging.info("="*70)
+logging.info("STACKING CLASSIFIER TRAINING")
+logging.info("="*70)
+
+# Load preprocessed data
+logging.info("\nLoading preprocessed data...")
+preprocessed_path = get_preprocessed_data_path()
+
+if not os.path.exists(preprocessed_path):
+    logging.error(f"Preprocessed data not found at {preprocessed_path}")
+    logging.error("Please run sections 1-4 of 03a_model_training.py first to create preprocessed data.")
+    raise FileNotFoundError(f"Preprocessed data not found at {preprocessed_path}")
+
+data = joblib.load(preprocessed_path)
+X_train_with_indicators = data['X_train_with_indicators']
+X_test_with_indicators = data['X_test_with_indicators']
+y_train = data['y_train']
+y_test = data['y_test']
+
+logging.info(f"Loaded data shapes:")
+logging.info(f"  X_train: {X_train_with_indicators.shape}")
+logging.info(f"  X_test: {X_test_with_indicators.shape}")
+logging.info(f"  y_train: {y_train.shape}")
+logging.info(f"  y_test: {y_test.shape}")
+
+
+# %%
+# ================
+# 6. LOAD BASE MODELS
+# ================
+
+import logging
+
+logging.info("\n" + "="*70)
+logging.info("Loading base models...")
+logging.info("="*70)
+
+model_mapping = {
+    'elasticnet': ['lasso'],  # Try 'elasticnet', fallback to 'lasso'
+    'elasticnet_2way': ['lasso_2way'],
+    'rf': [],
+    'gbt': [],
+    'hgbt': ['hist_gbt'],  # Try 'hgbt', fallback to 'hist_gbt'
+    'xgb': [],
+    'cb': [],
+}
+
+loaded_models = {}
+for model_name, fallbacks in model_mapping.items():
+    model = load_model_with_fallback(model_name, fallbacks)
+    if model is not None:
+        loaded_models[model_name] = model
+
+# Check if we have enough models
+if len(loaded_models) < 3:
+    logging.error(f"\nInsufficient models loaded ({len(loaded_models)}/7)")
+    logging.error("Need at least 3 base models to create a stacking classifier.")
+    logging.error("\nAvailable models:")
     for name in loaded_models.keys():
-        logging.info(f"  ✓ {name}")
-    
-    # %%
-    # ================
-    # 7. TRAIN STACKING CLASSIFIER
-    # ================
-    
-    # Create estimators list for stacking
-    estimators_list = [(name, model) for name, model in loaded_models.items()]
-    
-    logging.info("\n" + "="*70)
-    logging.info("TRAINING STACKING CLASSIFIER")
-    logging.info("="*70)
-    logging.info(f"Base models: {[name for name, _ in estimators_list]}")
-    logging.info(f"Final estimator: LogisticRegression")
-    logging.info(f"Cross-validation folds: {N_SPLITS_CV}")
-    logging.info(f"n_jobs: 1 (to avoid oversubscription with base models)")
-    
-    stacking_clf = StackingClassifier(
-        estimators=estimators_list,
-        final_estimator=LogisticRegression(random_state=RANDOM_STATE),
-        cv=N_SPLITS_CV, 
-        n_jobs=1,  # Keep sequential to avoid memory/CPU oversubscription
-        passthrough=False
-    )
-    
-    train_and_save_model(
-        model=stacking_clf,
-        model_name="stacking",
-        X_train=X_train_with_indicators,
-        y_train=y_train,
-        X_test=X_test_with_indicators,
-        y_test=y_test
-    )
-    
-    logging.info("\n" + "="*70)
-    logging.info("STACKING CLASSIFIER TRAINING COMPLETE")
-    logging.info("="*70)
-    logging.info(f"Model saved to: {get_model_path('stacking')}")
-    logging.info(f"Log saved to: {os.path.join(MODELS_DIR, 'stacking_training.log')}")
-    
-    print("\n" + "="*70)
-    print("STACKING CLASSIFIER TRAINING FINISHED SUCCESSFULLY")
-    print("="*70)
+        logging.error(f"  ✓ {name}")
+    logging.error("\nMissing models:")
+    for name in model_mapping.keys():
+        if name not in loaded_models:
+            logging.error(f"  ✗ {name}")
+    logging.error("\nPlease run sections 5.1-5.7 of 03a_model_training.py to train the base models.")
+    raise ValueError(f"Insufficient models loaded: {len(loaded_models)}/7")
+
+logging.info(f"\nSuccessfully loaded {len(loaded_models)}/7 base models:")
+for name in loaded_models.keys():
+    logging.info(f"  ✓ {name}")
+
+
+# %%
+# ================
+# 7. TRAIN STACKING CLASSIFIER
+# ================
+
+import logging
+from sklearn.ensemble import StackingClassifier
+from sklearn.linear_model import LogisticRegression
+from model_config import RANDOM_STATE, N_SPLITS_CV, get_model_path, MODELS_DIR
+import os
+
+# Create estimators list for stacking
+estimators_list = [(name, model) for name, model in loaded_models.items()]
+
+logging.info("\n" + "="*70)
+logging.info("TRAINING STACKING CLASSIFIER")
+logging.info("="*70)
+logging.info(f"Base models: {[name for name, _ in estimators_list]}")
+logging.info(f"Final estimator: LogisticRegression")
+logging.info(f"Cross-validation folds: {N_SPLITS_CV}")
+logging.info(f"n_jobs: 1 (to avoid oversubscription with base models)")
+
+stacking_clf = StackingClassifier(
+    estimators=estimators_list,
+    final_estimator=LogisticRegression(random_state=RANDOM_STATE),
+    cv=N_SPLITS_CV, 
+    n_jobs=1,  # Keep sequential to avoid memory/CPU oversubscription
+    passthrough=False
+)
+
+train_and_save_model(
+    model=stacking_clf,
+    model_name="stacking",
+    X_train=X_train_with_indicators,
+    y_train=y_train,
+    X_test=X_test_with_indicators,
+    y_test=y_test
+)
+
+logging.info("\n" + "="*70)
+logging.info("STACKING CLASSIFIER TRAINING COMPLETE")
+logging.info("="*70)
+logging.info(f"Model saved to: {get_model_path('stacking')}")
+logging.info(f"Log saved to: {os.path.join(MODELS_DIR, 'stacking_training.log')}")
+
+print("\n" + "="*70)
+print("STACKING CLASSIFIER TRAINING FINISHED SUCCESSFULLY")
+print("="*70)
+
