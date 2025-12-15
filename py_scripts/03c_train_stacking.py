@@ -31,14 +31,13 @@ from model_config import (
     get_preprocessed_data_path
 )
 
-# Import necessary sklearn components for custom transformer
-from sklearn.base import BaseEstimator, TransformerMixin
-
 
 # %%
 # ================
 # 2. CUSTOM TRANSFORMERS
 # ================
+
+from sklearn.base import BaseEstimator, TransformerMixin
 
 class DenseTransformer(BaseEstimator, TransformerMixin):
     """
