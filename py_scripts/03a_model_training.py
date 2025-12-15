@@ -28,6 +28,7 @@ from sklearn.model_selection import (
 )
 from sklearn.preprocessing import OneHotEncoder, StandardScaler, PolynomialFeatures
 from sklearn.impute import SimpleImputer, MissingIndicator
+from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.exceptions import NotFittedError
@@ -238,9 +239,10 @@ def build_preprocessor(
 def _make_sparse_poly_features(*, degree: int) -> PolynomialFeatures:
     """
     Create PolynomialFeatures configured to KEEP SPARSE OUTPUT when supported.
+    This is critical for feature expansion to avoid OOM errors.
 
-    scikit-learn compatibility:
-      - sklearn 0.21–1.4: `sparse=True` (explicit parameter)
+    Version compatibility:
+      - sklearn 1.4 and below: `sparse=True` (deprecated parameter)
       - sklearn 1.5–1.7: `sparse_output=True` (renamed parameter)
       - sklearn 1.8+: automatic sparsity preservation (no parameter needed)
     """
@@ -252,6 +254,20 @@ def _make_sparse_poly_features(*, degree: int) -> PolynomialFeatures:
         kwargs["sparse"] = True
     # else: sklearn 1.8+ automatically preserves sparsity when input is sparse
     return PolynomialFeatures(**kwargs)
+
+
+class DenseTransformer(BaseEstimator, TransformerMixin):
+    """
+    Converts sparse matrices to dense arrays.
+    Required for models that don't support sparse input (e.g., HistGradientBoostingClassifier).
+    """
+    def fit(self, X, y=None):
+        return self
+    
+    def transform(self, X):
+        if hasattr(X, 'toarray'):
+            return X.toarray()
+        return X
 
 
 def train_and_save_model(model, model_name: str, X_train, y_train, X_test, y_test):
@@ -768,6 +784,7 @@ def hgbt_optuna_objective(trial):
     
     pipeline = Pipeline([
         ('preprocessor', preprocessor),
+        ('to_dense', DenseTransformer()),  # HGBT requires dense input
         ('classifier', hgbt_clf)
     ])
     
@@ -795,6 +812,7 @@ try:
     best_params_hgbt = study_hgbt.best_params
     best_hgbt = Pipeline([
         ('preprocessor', preprocessor),
+        ('to_dense', DenseTransformer()),  # HGBT requires dense input
         ('classifier', HistGradientBoostingClassifier(
             learning_rate=best_params_hgbt['learning_rate'],
             max_iter=1000, # High cap for early stopping
