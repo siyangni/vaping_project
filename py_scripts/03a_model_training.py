@@ -1025,7 +1025,7 @@ estimators_list = [
     ('xgb', best_xgb),
     ('cb', best_cb),
     # We include GBC as well for diversity, though it is slower to train
-    ('gbt', best_gbc),
+    # ('gbt', best_gbc),
 ]
 
 logging.info("Initializing Stacking Classifier...")
